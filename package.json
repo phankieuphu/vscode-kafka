@@ -1,7 +1,7 @@
 {
   "name": "vscode-kafka",
   "displayName": "vscode-kafka",
-  "description": "GUI Kafka with vscode",
+  "description": "Manage Apache Kafka clusters from VS Code: browse topics and partitions, inspect consumer groups and lag, and produce/tail messages.",
   "version": "0.0.1",
   "engines": {
     "vscode": "^1.96.0"
@@ -12,31 +12,203 @@
   "activationEvents": [],
   "main": "./dist/extension.js",
   "contributes": {
+    "configuration": {
+      "title": "Kafka Manager",
+      "properties": {
+        "kafka.clusters": {
+          "type": "array",
+          "default": [],
+          "description": "Configured Kafka clusters. Managed via the 'Kafka: Add Cluster' command; edit by hand if you need to.",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": { "type": "string" },
+              "name": { "type": "string" },
+              "brokers": {
+                "type": "array",
+                "items": { "type": "string" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "kafkaExplorerContainer",
+          "title": "Kafka",
+          "icon": "resources/kafka.svg"
+        }
+      ]
+    },
+    "views": {
+      "kafkaExplorerContainer": [
+        {
+          "id": "kafkaExplorer",
+          "name": "Clusters"
+        }
+      ]
+    },
     "menus": {
+      "view/title": [
+        {
+          "command": "kafka-manager.addCluster",
+          "when": "view == kafkaExplorer",
+          "group": "navigation@1"
+        },
+        {
+          "command": "kafka-manager.refresh",
+          "when": "view == kafkaExplorer",
+          "group": "navigation@2"
+        }
+      ],
       "view/item/context": [
         {
+          "command": "kafka-manager.connectCluster",
+          "when": "view == kafkaExplorer && viewItem =~ /^kafkaCluster-/",
+          "group": "inline@1"
+        },
+        {
+          "command": "kafka-manager.disconnectCluster",
+          "when": "view == kafkaExplorer && viewItem =~ /^kafkaCluster-/",
+          "group": "inline@2"
+        },
+        {
+          "command": "kafka-manager.connectCluster",
+          "when": "view == kafkaExplorer && viewItem =~ /^kafkaCluster-/",
+          "group": "0_connection@1"
+        },
+        {
+          "command": "kafka-manager.disconnectCluster",
+          "when": "view == kafkaExplorer && viewItem =~ /^kafkaCluster-/",
+          "group": "0_connection@2"
+        },
+        {
+          "command": "kafka-manager.removeCluster",
+          "when": "view == kafkaExplorer && viewItem =~ /^kafkaCluster-/",
+          "group": "1_modification"
+        },
+        {
+          "command": "kafka-manager.createTopic",
+          "when": "view == kafkaExplorer && viewItem == kafkaTopicsFolder",
+          "group": "inline@1"
+        },
+        {
+          "command": "kafka-manager.viewTopic",
+          "when": "view == kafkaExplorer && viewItem == kafkaTopic",
+          "group": "inline@1"
+        },
+        {
           "command": "kafka-manager.produceMessage",
-          "when": "view == kafkaTopics && viewItem == kafkaTopic",
-          "group": "inline"
+          "when": "view == kafkaExplorer && viewItem == kafkaTopic",
+          "group": "inline@2"
+        },
+        {
+          "command": "kafka-manager.deleteTopic",
+          "when": "view == kafkaExplorer && viewItem == kafkaTopic",
+          "group": "1_modification"
+        },
+        {
+          "command": "kafka-manager.createConsumerGroup",
+          "when": "view == kafkaExplorer && viewItem == kafkaGroupsFolder",
+          "group": "inline@1"
+        },
+        {
+          "command": "kafka-manager.viewConsumerGroup",
+          "when": "view == kafkaExplorer && viewItem == kafkaGroup",
+          "group": "inline@1"
+        },
+        {
+          "command": "kafka-manager.resetGroupOffsets",
+          "when": "view == kafkaExplorer && viewItem == kafkaGroup",
+          "group": "1_modification"
+        },
+        {
+          "command": "kafka-manager.deleteConsumerGroup",
+          "when": "view == kafkaExplorer && viewItem == kafkaGroup",
+          "group": "1_modification"
+        },
+        {
+          "command": "kafka-manager.editGroupOffset",
+          "when": "view == kafkaExplorer && viewItem == kafkaGroupOffset",
+          "group": "inline@1"
         }
       ]
     },
     "commands": [
       {
-        "command": "kafka-manager.produceMessage",
-        "title": "Produce Message"
+        "command": "kafka-manager.addCluster",
+        "title": "Kafka: Add Cluster",
+        "icon": "$(add)"
       },
       {
-        "command": "kafka-manager.connect",
-        "title": "Kafka Manager: Connect to Kafka"
+        "command": "kafka-manager.removeCluster",
+        "title": "Kafka: Remove Cluster",
+        "icon": "$(trash)"
       },
       {
-        "command": "kafka-manager.listTopics",
-        "title": "Kafka Manager: List Topics"
+        "command": "kafka-manager.refresh",
+        "title": "Kafka: Refresh",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "kafka-manager.connectCluster",
+        "title": "Kafka: Connect",
+        "icon": "$(plug)"
+      },
+      {
+        "command": "kafka-manager.disconnectCluster",
+        "title": "Kafka: Disconnect",
+        "icon": "$(debug-disconnect)"
       },
       {
         "command": "kafka-manager.createTopic",
-        "title": "Kafka Manager: Create Topics"
+        "title": "Kafka: Create Topic",
+        "icon": "$(add)"
+      },
+      {
+        "command": "kafka-manager.deleteTopic",
+        "title": "Kafka: Delete Topic",
+        "icon": "$(trash)"
+      },
+      {
+        "command": "kafka-manager.viewTopic",
+        "title": "Kafka: Browse Messages",
+        "icon": "$(eye)"
+      },
+      {
+        "command": "kafka-manager.produceMessage",
+        "title": "Kafka: Produce Message",
+        "icon": "$(arrow-up)"
+      },
+      {
+        "command": "kafka-manager.deleteConsumerGroup",
+        "title": "Kafka: Delete Consumer Group",
+        "icon": "$(trash)"
+      },
+      {
+        "command": "kafka-manager.createConsumerGroup",
+        "title": "Kafka: Create Consumer Group",
+        "icon": "$(add)"
+      },
+      {
+        "command": "kafka-manager.viewConsumerGroup",
+        "title": "Kafka: View Group Details",
+        "icon": "$(eye)"
+      },
+      {
+        "command": "kafka-manager.resetGroupOffsets",
+        "title": "Kafka: Reset Group Offsets..."
+      },
+      {
+        "command": "kafka-manager.editGroupOffset",
+        "title": "Kafka: Edit Offset...",
+        "icon": "$(edit)"
+      },
+      {
+        "command": "kafka-manager.showOutput",
+        "title": "Kafka: Show Output Channel"
       }
     ]
   },
@@ -66,7 +238,6 @@
     "webpack-cli": "^5.1.4"
   },
   "dependencies": {
-    "kafka-node": "^5.0.0",
     "kafkajs": "^2.2.4"
   }
 }
