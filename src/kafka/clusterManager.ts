@@ -77,14 +77,16 @@ export class ClusterManager implements vscode.Disposable {
     id: string,
     name: string,
   ): Promise<ClusterConfig | undefined> {
-    const cluster: ClusterConfig | undefined = this.getCluster(id);
-    if (!cluster) {
+    const clusters = this.getClusters();
+    const cluster = clusters.find((c) => c.id === id);
+    if (!cluster || name.length === 0) {
       return cluster;
     }
-    if (name.length > 0) {
-      cluster.name = name;
-    }
-    return cluster;
+    const updated: ClusterConfig = { ...cluster, name };
+    await this.saveClusters(
+      clusters.map((c) => (c.id === id ? updated : c)),
+    );
+    return updated;
   }
 
   async removeCluster(id: string): Promise<void> {
