@@ -3,7 +3,7 @@
   "displayName": "Kafka Manager",
   "description": "Manage Apache Kafka clusters from VS Code: browse topics and partitions, inspect consumer groups and lag, and produce/tail messages.",
   "publisher": "PatrickPhan",
-  "version": "0.0.1",
+  "version": "0.0.4",
   "icon": "resources/icon.png",
   "license": "MIT",
   "repository": {
