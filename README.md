@@ -2,6 +2,8 @@
 
 Manage Apache Kafka clusters directly from VS Code: connect to one or more clusters, browse topics and partitions, inspect consumer groups and their lag, produce messages, and tail live traffic — all from a sidebar tree and a message-browser panel.
 
+![Cluster dashboard](docs/images/dashboard.png)
+
 ## Features
 
 - **Cluster dashboard** — click the dashboard icon on a connected cluster (or run **Kafka: Open Cluster Dashboard**, or click the Kafka item in the status bar) for a one-page health view: an issues banner with links to the affected topics and groups, broker/topic/partition/group counts, under-replicated and offline partitions, total consumer lag, per-broker leader distribution, and sortable, filterable topic and consumer-group tables. Optional auto-refresh every 10/30/60 seconds; if refreshes keep failing, the last good data stays on screen, marked stale.
@@ -11,6 +13,30 @@ Manage Apache Kafka clusters directly from VS Code: connect to one or more clust
 - **Produce** — send a message with an optional key, target partition and headers; JSON values are checked as you type (Ctrl/Cmd+Enter sends).
 - **Consumer group panel** — state, members with their assigned partitions, and lag per partition. **Reset Offsets…** moves a topic to earliest, latest, a timestamp, or shifts by N, with a preview of partitions changed and messages skipped or replayed; it's blocked while the group has active members.
 - **Topic management** — create and delete topics from the tree's context menu.
+
+## Screenshots
+
+### Cluster dashboard
+
+Health at a glance: open issues with links to the affected topics and groups, summary tiles, broker leadership, consumer-group lag and topic sizes.
+
+![Cluster dashboard](docs/images/dashboard.png)
+
+When a refresh fails, the last good data stays on screen, marked stale, with Retry and Show Output.
+
+![Dashboard after a failed refresh](docs/images/dashboard-refresh-failed.png)
+
+### Topic panel
+
+Browse the newest messages or live-tail new ones, inspect a message's key, headers and JSON value, and produce messages with a key, partition and headers.
+
+![Topic panel](docs/images/topic-panel.png)
+
+### Consumer group panel
+
+Members and their assigned partitions, lag per partition, and a Reset Offsets panel that previews the change before applying it.
+
+![Consumer group panel](docs/images/consumer-group.png)
 
 ## Requirements
 
