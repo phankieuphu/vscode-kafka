@@ -6,6 +6,8 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-09-27
+
 ### Added
 
 - Cluster dashboard: health summary tiles, problem banner, broker leader distribution, topic sizes and partition health, and consumer-group lag in one panel, with filtering, sorting, auto-refresh and click-through to topic/group panels
@@ -19,6 +21,9 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 ### Fixed
 
 - Rename Cluster always failed with "Please choose correct cluster"
+- Create Topic reported success when the topic already existed; failures are now logged to the output channel
+- A failed connection attempt left the admin client open
+- Consumer group offsets not refreshing correctly
 
 ## [0.0.4] - 2026-09-24
 
