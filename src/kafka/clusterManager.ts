@@ -106,9 +106,7 @@ export class ClusterManager implements vscode.Disposable {
       return cluster;
     }
     const updated: ClusterConfig = { ...cluster, name };
-    await this.saveClusters(
-      clusters.map((c) => (c.id === id ? updated : c)),
-    );
+    await this.saveClusters(clusters.map((c) => (c.id === id ? updated : c)));
     return updated;
   }
 
@@ -146,8 +144,8 @@ export class ClusterManager implements vscode.Disposable {
       return;
     }
     this.setStatus(cluster.id, "connecting");
+    const admin = this.getKafka(cluster).admin();
     try {
-      const admin = this.getKafka(cluster).admin();
       await admin.connect();
       // Cheap round-trip to confirm the brokers actually respond.
       await admin.listTopics();
@@ -155,6 +153,7 @@ export class ClusterManager implements vscode.Disposable {
       this.lastErrors.delete(cluster.id);
       this.setStatus(cluster.id, "connected");
     } catch (error) {
+      await admin.disconnect().catch(() => undefined);
       this.log(
         `Failed to connect to "${cluster.name}": ${describeError(error)}`,
       );
@@ -210,10 +209,13 @@ export class ClusterManager implements vscode.Disposable {
     replicationFactor: number,
   ): Promise<void> {
     const admin = this.ensureAdmin(cluster);
-    await admin.createTopics({
+    const created = await admin.createTopics({
       waitForLeaders: true,
       topics: [{ topic, numPartitions, replicationFactor }],
     });
+    if (!created) {
+      throw new Error(`Topic "${topic}" already exists`);
+    }
   }
 
   async deleteTopic(cluster: ClusterConfig, topic: string): Promise<void> {
@@ -406,16 +408,22 @@ export class ClusterManager implements vscode.Disposable {
           try {
             return [t.name, await admin.fetchTopicOffsets(t.name)] as const;
           } catch (error) {
-            this.log(`Dashboard: failed to fetch offsets for "${t.name}": ${describeError(error)}`);
+            this.log(
+              `Dashboard: failed to fetch offsets for "${t.name}": ${describeError(error)}`,
+            );
             return [t.name, [] as RawWatermark[]] as const;
           }
         }),
       ),
-      groupIds.length > 0 ? admin.describeGroups(groupIds) : Promise.resolve({ groups: [] }),
+      groupIds.length > 0
+        ? admin.describeGroups(groupIds)
+        : Promise.resolve({ groups: [] }),
       Promise.all(
         groupIds.map((groupId) =>
           admin.fetchOffsets({ groupId }).catch((error) => {
-            this.log(`Dashboard: failed to fetch offsets for group "${groupId}": ${describeError(error)}`);
+            this.log(
+              `Dashboard: failed to fetch offsets for group "${groupId}": ${describeError(error)}`,
+            );
             return [];
           }),
         ),
@@ -443,7 +451,10 @@ export class ClusterManager implements vscode.Disposable {
     });
   }
 
-  async getTopicDetails(cluster: ClusterConfig, topic: string): Promise<TopicDetails> {
+  async getTopicDetails(
+    cluster: ClusterConfig,
+    topic: string,
+  ): Promise<TopicDetails> {
     const admin = this.ensureAdmin(cluster);
     const [info, watermarks] = await Promise.all([
       this.describeTopic(cluster, topic),
@@ -456,19 +467,32 @@ export class ClusterManager implements vscode.Disposable {
       const high = w?.high ?? "0";
       const count = BigInt(high) - BigInt(low);
       total += count > 0n ? count : 0n;
-      return { ...p, low, high, messageCount: (count > 0n ? count : 0n).toString() };
+      return {
+        ...p,
+        low,
+        high,
+        messageCount: (count > 0n ? count : 0n).toString(),
+      };
     });
     return {
       name: info.name,
       partitions,
-      replicationFactor: Math.max(0, ...partitions.map((p) => p.replicas.length)),
-      underReplicated: partitions.filter((p) => p.isr.length < p.replicas.length).length,
+      replicationFactor: Math.max(
+        0,
+        ...partitions.map((p) => p.replicas.length),
+      ),
+      underReplicated: partitions.filter(
+        (p) => p.isr.length < p.replicas.length,
+      ).length,
       offline: partitions.filter((p) => p.leader < 0).length,
       messageCount: total.toString(),
     };
   }
 
-  async getTopicConfig(cluster: ClusterConfig, topic: string): Promise<TopicConfigEntry[]> {
+  async getTopicConfig(
+    cluster: ClusterConfig,
+    topic: string,
+  ): Promise<TopicConfigEntry[]> {
     const admin = this.ensureAdmin(cluster);
     const { resources } = await admin.describeConfigs({
       includeSynonyms: false,
@@ -492,7 +516,9 @@ export class ClusterManager implements vscode.Disposable {
     spec: ResetSpec,
   ): Promise<OffsetMove[]> {
     const admin = this.ensureAdmin(cluster);
-    const entries = (await this.fetchGroupOffsets(cluster, groupId)).filter((e) => e.topic === topic);
+    const entries = (await this.fetchGroupOffsets(cluster, groupId)).filter(
+      (e) => e.topic === topic,
+    );
     let moves: OffsetMove[];
     if (spec.mode === "timestamp") {
       const [byTime, watermarks] = await Promise.all([
@@ -500,9 +526,15 @@ export class ClusterManager implements vscode.Disposable {
         admin.fetchTopicOffsets(topic),
       ]);
       moves = byTime.map((t) => {
-        const high = watermarks.find((w) => w.partition === t.partition)?.high ?? "0";
-        const from = entries.find((e) => e.partition === t.partition)?.offset ?? "-1";
-        return { partition: t.partition, from, to: t.offset === "-1" ? high : t.offset };
+        const high =
+          watermarks.find((w) => w.partition === t.partition)?.high ?? "0";
+        const from =
+          entries.find((e) => e.partition === t.partition)?.offset ?? "-1";
+        return {
+          partition: t.partition,
+          from,
+          to: t.offset === "-1" ? high : t.offset,
+        };
       });
     } else {
       moves = planReset(entries, topic, spec).moves;
@@ -530,10 +562,14 @@ export class ClusterManager implements vscode.Disposable {
         topic,
         messages: [
           {
-            key: options.key && options.key.length > 0 ? options.key : undefined,
+            key:
+              options.key && options.key.length > 0 ? options.key : undefined,
             value: options.value,
             partition: options.partition,
-            headers: options.headers && Object.keys(options.headers).length > 0 ? options.headers : undefined,
+            headers:
+              options.headers && Object.keys(options.headers).length > 0
+                ? options.headers
+                : undefined,
           },
         ],
       });

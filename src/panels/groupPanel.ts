@@ -2,7 +2,15 @@ import * as vscode from "vscode";
 import { describeError, ClusterManager } from "../kafka/clusterManager";
 import { planReset } from "../kafka/offsets";
 import { ClusterConfig, GroupOffsetEntry, ResetSpec } from "../kafka/types";
-import { baseCss, contentSecurityPolicy, createNonce, escapeHtml, icons, scriptValue, sharedScript } from "./webview";
+import {
+  baseCss,
+  contentSecurityPolicy,
+  createNonce,
+  escapeHtml,
+  icons,
+  scriptValue,
+  sharedScript,
+} from "./webview";
 
 type WebviewInMessage =
   | { command: "refresh" }
@@ -22,7 +30,11 @@ export class GroupPanel {
   private disposed = false;
   private offsets: GroupOffsetEntry[] = [];
 
-  static createOrShow(manager: ClusterManager, cluster: ClusterConfig, groupId: string): void {
+  static createOrShow(
+    manager: ClusterManager,
+    cluster: ClusterConfig,
+    groupId: string,
+  ): void {
     const key = `${cluster.id}:${groupId}`;
     const existing = GroupPanel.panels.get(key);
     if (existing) {
@@ -35,7 +47,7 @@ export class GroupPanel {
       "kafkaGroupDetails",
       `Kafka Group: ${groupId}`,
       vscode.ViewColumn.Active,
-      { enableScripts: true, retainContextWhenHidden: true }
+      { enableScripts: true, retainContextWhenHidden: true },
     );
 
     const instance = new GroupPanel(panel, manager, cluster, groupId, key);
@@ -47,12 +59,14 @@ export class GroupPanel {
     private readonly manager: ClusterManager,
     private readonly cluster: ClusterConfig,
     private readonly groupId: string,
-    private readonly key: string
+    private readonly key: string,
   ) {
     this.panel = panel;
     this.panel.webview.html = this.render();
 
-    this.panel.webview.onDidReceiveMessage((message: WebviewInMessage) => this.handleMessage(message));
+    this.panel.webview.onDidReceiveMessage((message: WebviewInMessage) =>
+      this.handleMessage(message),
+    );
     this.panel.onDidDispose(() => this.dispose());
 
     this.load();
@@ -86,9 +100,18 @@ export class GroupPanel {
         this.manager.fetchGroupOffsets(this.cluster, this.groupId),
       ]);
       this.offsets = offsets;
-      this.post({ command: "data", details, offsets, at: new Date().toLocaleTimeString() });
+      this.post({
+        command: "data",
+        details,
+        offsets,
+        at: new Date().toLocaleTimeString(),
+      });
     } catch (error) {
-      this.post({ command: "status", text: `Failed to load group: ${describeError(error)}`, error: true });
+      this.post({
+        command: "status",
+        text: `Failed to load group: ${describeError(error)}`,
+        error: true,
+      });
     } finally {
       this.post({ command: "loading", value: false });
     }
@@ -97,7 +120,10 @@ export class GroupPanel {
   private postPreview(topic: string, spec: ResetSpec): void {
     if (spec.mode === "timestamp") {
       const partitions = this.offsets.filter((o) => o.topic === topic).length;
-      this.post({ command: "preview", preview: { partitions, lagBefore: null, lagAfter: null } });
+      this.post({
+        command: "preview",
+        preview: { partitions, lagBefore: null, lagAfter: null },
+      });
       return;
     }
     const preview = planReset(this.offsets, topic, spec);
@@ -126,43 +152,72 @@ export class GroupPanel {
   private async reset(topic: string, spec: ResetSpec): Promise<void> {
     const confirm = await vscode.window.showWarningMessage(
       `Reset "${this.groupId}" offsets on "${topic}" to ${this.describeSpec(spec)}?`,
-      { modal: true, detail: "Consumers in this group will resume from the new offsets." },
-      "Reset"
+      {
+        modal: true,
+        detail: "Consumers in this group will resume from the new offsets.",
+      },
+      "Reset",
     );
     if (confirm !== "Reset") {
       this.post({ command: "resetDone", ok: false });
       return;
     }
     try {
-      const moves = await this.manager.resetGroupOffsetsTo(this.cluster, this.groupId, topic, spec);
+      const moves = await this.manager.resetGroupOffsetsTo(
+        this.cluster,
+        this.groupId,
+        topic,
+        spec,
+      );
       this.post({ command: "resetDone", ok: true });
-      this.post({ command: "status", text: `Reset ${moves.length} partition(s) of "${topic}".` });
+      this.post({
+        command: "status",
+        text: `Reset ${moves.length} partition(s) of "${topic}".`,
+      });
       vscode.commands.executeCommand("kafka-manager.refresh");
       await this.load();
     } catch (error) {
       this.post({ command: "resetDone", ok: false });
-      this.post({ command: "status", text: `Failed to reset offsets: ${describeError(error)}`, error: true });
+      this.post({
+        command: "status",
+        text: `Failed to reset offsets: ${describeError(error)}`,
+        error: true,
+      });
     }
   }
 
   private async editOffset(topic: string, partition: number): Promise<void> {
-    const entry = this.offsets.find((o) => o.topic === topic && o.partition === partition);
+    const entry = this.offsets.find(
+      (o) => o.topic === topic && o.partition === partition,
+    );
     if (!entry) {
       return;
     }
-    await vscode.commands.executeCommand("kafka-manager.editGroupOffset", {
-      cluster: this.cluster,
-      groupId: this.groupId,
-      entry,
-    });
+    try {
+      await vscode.commands.executeCommand("kafka-manager.editGroupOffset", {
+        cluster: this.cluster,
+        groupId: this.groupId,
+        entry,
+      });
+    } catch (error) {
+      this.post({
+        command: "status",
+        text: `Failed to edit group offsets: ${describeError(error)}`,
+        error: true,
+      });
+      return;
+    }
     await this.load();
   }
 
   private async deleteGroup(): Promise<void> {
     const confirm = await vscode.window.showWarningMessage(
       `Delete consumer group "${this.groupId}"?`,
-      { modal: true, detail: "Its committed offsets are removed. This cannot be undone." },
-      "Delete"
+      {
+        modal: true,
+        detail: "Its committed offsets are removed. This cannot be undone.",
+      },
+      "Delete",
     );
     if (confirm !== "Delete") {
       return;
@@ -172,7 +227,11 @@ export class GroupPanel {
       vscode.commands.executeCommand("kafka-manager.refresh");
       this.panel.dispose();
     } catch (error) {
-      this.post({ command: "status", text: `Failed to delete group: ${describeError(error)}`, error: true });
+      this.post({
+        command: "status",
+        text: `Failed to delete group: ${describeError(error)}`,
+        error: true,
+      });
     }
   }
 

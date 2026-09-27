@@ -57,11 +57,17 @@ export function activate(context: vscode.ExtensionContext): void {
         return;
       }
 
-      const cluster = await manager.addCluster(name.trim(), parseBrokers(brokersInput));
+      const cluster = await manager.addCluster(
+        name.trim(),
+        parseBrokers(brokersInput),
+      );
       treeProvider.refresh();
       try {
         await vscode.window.withProgress(
-          { location: vscode.ProgressLocation.Notification, title: `Connecting to "${cluster.name}"…` },
+          {
+            location: vscode.ProgressLocation.Notification,
+            title: `Connecting to "${cluster.name}"…`,
+          },
           () => manager.connect(cluster),
         );
       } catch (error) {
@@ -82,7 +88,8 @@ export function activate(context: vscode.ExtensionContext): void {
           title: "Rename Kafka Cluster",
           prompt: "Name shown in the Clusters view",
           value: item.cluster.name,
-          validateInput: (v) => (v.trim().length === 0 ? "Enter a name" : undefined),
+          validateInput: (v) =>
+            v.trim().length === 0 ? "Enter a name" : undefined,
         });
         if (!name || name.trim() === item.cluster.name) {
           return;
@@ -96,7 +103,10 @@ export function activate(context: vscode.ExtensionContext): void {
       "kafka-manager.copyBootstrapServers",
       async (item: ClusterTreeItem) => {
         await vscode.env.clipboard.writeText(item.cluster.brokers.join(","));
-        vscode.window.setStatusBarMessage(`Copied bootstrap servers for "${item.cluster.name}"`, 3000);
+        vscode.window.setStatusBarMessage(
+          `Copied bootstrap servers for "${item.cluster.name}"`,
+          3000,
+        );
       },
     ),
 
@@ -180,6 +190,9 @@ export function activate(context: vscode.ExtensionContext): void {
           vscode.window.showInformationMessage(`Topic "${topic}" created.`);
           treeProvider.refresh();
         } catch (error) {
+          manager.log(
+            `Failed to create topic "${topic}" on cluster "${cluster.name}": ${describeError(error)}`,
+          );
           vscode.window.showErrorMessage(
             `Failed to create topic: ${describeError(error)}`,
           );
