@@ -3,17 +3,27 @@ import * as vscode from "vscode";
 import {
   Admin,
   AssignerProtocol,
+  ConfigResourceTypes,
+  IHeaders,
   Kafka,
   GroupOverview,
   ITopicMetadata,
 } from "kafkajs";
+import { buildClusterOverview, RawGroup, RawWatermark } from "./dashboard";
+import { planReset } from "./offsets";
 import {
   ClusterConfig,
+  ClusterOverview,
   ConnectionStatus,
   ConsumedMessage,
   GroupDetails,
   GroupOffsetEntry,
+  OffsetMove,
   PartitionInfo,
+  ProduceOptions,
+  ResetSpec,
+  TopicConfigEntry,
+  TopicDetails,
   TopicInfo,
 } from "./types";
 
@@ -33,6 +43,18 @@ function toTopicInfo(metadata: ITopicMetadata): TopicInfo {
   return { name: metadata.name, partitions };
 }
 
+function decodeHeaders(headers: IHeaders | undefined): Record<string, string> {
+  const result: Record<string, string> = {};
+  for (const [name, raw] of Object.entries(headers ?? {})) {
+    const values = Array.isArray(raw) ? raw : [raw];
+    result[name] = values
+      .filter((v) => v !== undefined)
+      .map((v) => v!.toString())
+      .join(", ");
+  }
+  return result;
+}
+
 /**
  * Owns cluster configuration (persisted in the `kafka.clusters` setting),
  * live connection state, and every KafkaJS admin/producer/consumer operation
@@ -42,6 +64,7 @@ export class ClusterManager implements vscode.Disposable {
   private readonly statuses = new Map<string, ConnectionStatus>();
   private readonly kafkaInstances = new Map<string, Kafka>();
   private readonly admins = new Map<string, Admin>();
+  private readonly lastErrors = new Map<string, string>();
   private readonly output = vscode.window.createOutputChannel("Kafka Manager");
 
   private readonly _onDidChangeStatus = new vscode.EventEmitter<string>();
@@ -83,9 +106,7 @@ export class ClusterManager implements vscode.Disposable {
       return cluster;
     }
     const updated: ClusterConfig = { ...cluster, name };
-    await this.saveClusters(
-      clusters.map((c) => (c.id === id ? updated : c)),
-    );
+    await this.saveClusters(clusters.map((c) => (c.id === id ? updated : c)));
     return updated;
   }
 
@@ -94,6 +115,10 @@ export class ClusterManager implements vscode.Disposable {
     this.kafkaInstances.delete(id);
     this.statuses.delete(id);
     await this.saveClusters(this.getClusters().filter((c) => c.id !== id));
+  }
+
+  getLastError(id: string): string | undefined {
+    return this.lastErrors.get(id);
   }
 
   getStatus(id: string): ConnectionStatus {
@@ -119,17 +144,20 @@ export class ClusterManager implements vscode.Disposable {
       return;
     }
     this.setStatus(cluster.id, "connecting");
+    const admin = this.getKafka(cluster).admin();
     try {
-      const admin = this.getKafka(cluster).admin();
       await admin.connect();
       // Cheap round-trip to confirm the brokers actually respond.
       await admin.listTopics();
       this.admins.set(cluster.id, admin);
+      this.lastErrors.delete(cluster.id);
       this.setStatus(cluster.id, "connected");
     } catch (error) {
+      await admin.disconnect().catch(() => undefined);
       this.log(
         `Failed to connect to "${cluster.name}": ${describeError(error)}`,
       );
+      this.lastErrors.set(cluster.id, describeError(error));
       this.setStatus(cluster.id, "error");
       throw error;
     }
@@ -181,10 +209,13 @@ export class ClusterManager implements vscode.Disposable {
     replicationFactor: number,
   ): Promise<void> {
     const admin = this.ensureAdmin(cluster);
-    await admin.createTopics({
+    const created = await admin.createTopics({
       waitForLeaders: true,
       topics: [{ topic, numPartitions, replicationFactor }],
     });
+    if (!created) {
+      throw new Error(`Topic "${topic}" already exists`);
+    }
   }
 
   async deleteTopic(cluster: ClusterConfig, topic: string): Promise<void> {
@@ -346,6 +377,7 @@ export class ClusterManager implements vscode.Disposable {
           topic,
           partition: p.partition,
           offset: p.offset,
+          low: hw?.low ?? "0",
           high,
           lag,
         });
@@ -356,18 +388,190 @@ export class ClusterManager implements vscode.Disposable {
     );
   }
 
+  /**
+   * Collects everything the cluster dashboard shows in one pass: broker
+   * layout, partition health, topic sizes and per-group lag. Watermarks are
+   * fetched once per topic and shared by every group's lag calculation.
+   */
+  async getClusterOverview(cluster: ClusterConfig): Promise<ClusterOverview> {
+    const admin = this.ensureAdmin(cluster);
+    const [description, topics, groupList] = await Promise.all([
+      admin.describeCluster(),
+      this.listTopics(cluster),
+      admin.listGroups(),
+    ]);
+
+    const groupIds = groupList.groups.map((g) => g.groupId);
+    const [watermarkEntries, described, groupOffsets] = await Promise.all([
+      Promise.all(
+        topics.map(async (t) => {
+          try {
+            return [t.name, await admin.fetchTopicOffsets(t.name)] as const;
+          } catch (error) {
+            this.log(
+              `Dashboard: failed to fetch offsets for "${t.name}": ${describeError(error)}`,
+            );
+            return [t.name, [] as RawWatermark[]] as const;
+          }
+        }),
+      ),
+      groupIds.length > 0
+        ? admin.describeGroups(groupIds)
+        : Promise.resolve({ groups: [] }),
+      Promise.all(
+        groupIds.map((groupId) =>
+          admin.fetchOffsets({ groupId }).catch((error) => {
+            this.log(
+              `Dashboard: failed to fetch offsets for group "${groupId}": ${describeError(error)}`,
+            );
+            return [];
+          }),
+        ),
+      ),
+    ]);
+
+    const watermarks = new Map<string, RawWatermark[]>(watermarkEntries);
+    const groups: RawGroup[] = groupIds.map((groupId, i) => {
+      const info = described.groups.find((g) => g.groupId === groupId);
+      return {
+        groupId,
+        state: info?.state ?? "Unknown",
+        memberCount: info?.members.length ?? 0,
+        offsets: groupOffsets[i],
+      };
+    });
+
+    return buildClusterOverview({
+      clusterId: description.clusterId,
+      controllerId: description.controller,
+      brokers: description.brokers,
+      topics,
+      watermarks,
+      groups,
+    });
+  }
+
+  async getTopicDetails(
+    cluster: ClusterConfig,
+    topic: string,
+  ): Promise<TopicDetails> {
+    const admin = this.ensureAdmin(cluster);
+    const [info, watermarks] = await Promise.all([
+      this.describeTopic(cluster, topic),
+      admin.fetchTopicOffsets(topic),
+    ]);
+    let total = 0n;
+    const partitions = info.partitions.map((p) => {
+      const w = watermarks.find((x) => x.partition === p.partitionId);
+      const low = w?.low ?? "0";
+      const high = w?.high ?? "0";
+      const count = BigInt(high) - BigInt(low);
+      total += count > 0n ? count : 0n;
+      return {
+        ...p,
+        low,
+        high,
+        messageCount: (count > 0n ? count : 0n).toString(),
+      };
+    });
+    return {
+      name: info.name,
+      partitions,
+      replicationFactor: Math.max(
+        0,
+        ...partitions.map((p) => p.replicas.length),
+      ),
+      underReplicated: partitions.filter(
+        (p) => p.isr.length < p.replicas.length,
+      ).length,
+      offline: partitions.filter((p) => p.leader < 0).length,
+      messageCount: total.toString(),
+    };
+  }
+
+  async getTopicConfig(
+    cluster: ClusterConfig,
+    topic: string,
+  ): Promise<TopicConfigEntry[]> {
+    const admin = this.ensureAdmin(cluster);
+    const { resources } = await admin.describeConfigs({
+      includeSynonyms: false,
+      resources: [{ type: ConfigResourceTypes.TOPIC, name: topic }],
+    });
+    return (resources[0]?.configEntries ?? [])
+      .map((e) => ({
+        name: e.configName,
+        value: e.isSensitive ? "********" : e.configValue,
+        isDefault: e.isDefault,
+        readOnly: e.readOnly,
+        isSensitive: e.isSensitive,
+      }))
+      .sort((a, b) => a.name.localeCompare(b.name));
+  }
+
+  async resetGroupOffsetsTo(
+    cluster: ClusterConfig,
+    groupId: string,
+    topic: string,
+    spec: ResetSpec,
+  ): Promise<OffsetMove[]> {
+    const admin = this.ensureAdmin(cluster);
+    const entries = (await this.fetchGroupOffsets(cluster, groupId)).filter(
+      (e) => e.topic === topic,
+    );
+    let moves: OffsetMove[];
+    if (spec.mode === "timestamp") {
+      const [byTime, watermarks] = await Promise.all([
+        admin.fetchTopicOffsetsByTimestamp(topic, spec.timestamp),
+        admin.fetchTopicOffsets(topic),
+      ]);
+      moves = byTime.map((t) => {
+        const high =
+          watermarks.find((w) => w.partition === t.partition)?.high ?? "0";
+        const from =
+          entries.find((e) => e.partition === t.partition)?.offset ?? "-1";
+        return {
+          partition: t.partition,
+          from,
+          to: t.offset === "-1" ? high : t.offset,
+        };
+      });
+    } else {
+      moves = planReset(entries, topic, spec).moves;
+    }
+    if (moves.length === 0) {
+      throw new Error(`"${groupId}" has no partitions of "${topic}" to reset.`);
+    }
+    await admin.setOffsets({
+      groupId,
+      topic,
+      partitions: moves.map((m) => ({ partition: m.partition, offset: m.to })),
+    });
+    return moves;
+  }
+
   async produce(
     cluster: ClusterConfig,
     topic: string,
-    key: string | undefined,
-    value: string,
+    options: ProduceOptions,
   ): Promise<void> {
     const producer = this.getKafka(cluster).producer();
     await producer.connect();
     try {
       await producer.send({
         topic,
-        messages: [{ key: key && key.length > 0 ? key : undefined, value }],
+        messages: [
+          {
+            key:
+              options.key && options.key.length > 0 ? options.key : undefined,
+            value: options.value,
+            partition: options.partition,
+            headers:
+              options.headers && Object.keys(options.headers).length > 0
+                ? options.headers
+                : undefined,
+          },
+        ],
       });
     } finally {
       await producer.disconnect();
@@ -398,6 +602,7 @@ export class ClusterManager implements vscode.Disposable {
             key: message.key?.toString() ?? null,
             value: message.value?.toString() ?? null,
             timestamp: message.timestamp,
+            headers: decodeHeaders(message.headers),
           });
         },
       })
@@ -471,6 +676,7 @@ export class ClusterManager implements vscode.Disposable {
               key: message.key?.toString() ?? null,
               value: message.value?.toString() ?? null,
               timestamp: message.timestamp,
+              headers: decodeHeaders(message.headers),
             });
             const target = targets.get(partition);
             if (target !== undefined && BigInt(message.offset) + 1n >= target) {

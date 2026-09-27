@@ -11,6 +11,9 @@ import {
 } from "./tree/kafkaTreeProvider";
 import { TopicPanel } from "./panels/topicPanel";
 import { GroupPanel } from "./panels/groupPanel";
+import { DashboardPanel } from "./panels/dashboardPanel";
+import { parseBrokers, validateBrokers } from "./kafka/brokers";
+import { KafkaStatusBar } from "./statusBar";
 
 export function activate(context: vscode.ExtensionContext): void {
   const manager = new ClusterManager();
@@ -18,6 +21,7 @@ export function activate(context: vscode.ExtensionContext): void {
 
   context.subscriptions.push(
     manager,
+    new KafkaStatusBar(manager),
     vscode.window.registerTreeDataProvider("kafkaExplorer", treeProvider),
 
     vscode.commands.registerCommand("kafka-manager.refresh", () =>
@@ -25,74 +29,84 @@ export function activate(context: vscode.ExtensionContext): void {
     ),
 
     vscode.commands.registerCommand("kafka-manager.addCluster", async () => {
+      const existing = new Set(manager.getClusters().map((c) => c.name));
       const name = await vscode.window.showInputBox({
-        prompt: "Name for this Kafka cluster",
+        title: "Add Kafka Cluster (1/2)",
+        prompt: "Name shown in the Clusters view",
         placeHolder: "Local",
+        ignoreFocusOut: true,
+        validateInput: (v) =>
+          v.trim().length === 0
+            ? "Enter a name"
+            : existing.has(v.trim())
+              ? `A cluster named “${v.trim()}” already exists`
+              : undefined,
       });
       if (!name) {
         return;
       }
 
       const brokersInput = await vscode.window.showInputBox({
-        prompt: "Broker addresses (comma-separated)",
+        title: "Add Kafka Cluster (2/2)",
+        prompt: "Bootstrap servers as host:port, comma-separated",
         placeHolder: "localhost:9092",
+        ignoreFocusOut: true,
+        validateInput: validateBrokers,
       });
       if (!brokersInput) {
         return;
       }
 
-      const brokers = brokersInput
-        .split(",")
-        .map((b) => b.trim())
-        .filter((b) => b.length > 0);
-      if (brokers.length === 0) {
-        vscode.window.showErrorMessage(
-          "At least one broker address is required.",
-        );
-        return;
-      }
-
-      await manager.addCluster(name, brokers);
+      const cluster = await manager.addCluster(
+        name.trim(),
+        parseBrokers(brokersInput),
+      );
       treeProvider.refresh();
+      try {
+        await vscode.window.withProgress(
+          {
+            location: vscode.ProgressLocation.Notification,
+            title: `Connecting to "${cluster.name}"…`,
+          },
+          () => manager.connect(cluster),
+        );
+      } catch (error) {
+        const choice = await vscode.window.showWarningMessage(
+          `Saved "${cluster.name}", but couldn't connect: ${describeError(error)}`,
+          "Show Output",
+        );
+        if (choice === "Show Output") {
+          manager.showOutput();
+        }
+      }
     }),
 
     vscode.commands.registerCommand(
       "kafka-manager.updateClusterName",
       async (item: ClusterTreeItem) => {
-        if (!item.id) {
-          vscode.window.showErrorMessage("Please choose correct cluster");
-          return;
-        }
         const name = await vscode.window.showInputBox({
-          prompt: "Name for this Kafka cluster",
-          placeHolder: "Local",
+          title: "Rename Kafka Cluster",
+          prompt: "Name shown in the Clusters view",
+          value: item.cluster.name,
+          validateInput: (v) =>
+            v.trim().length === 0 ? "Enter a name" : undefined,
         });
-        if (!name) {
-          vscode.window.showErrorMessage("Please input new name for cluster");
+        if (!name || name.trim() === item.cluster.name) {
           return;
         }
-
-        // const brokersInput = await vscode.window.showInputBox({
-        //   prompt: "Broker addresses (comma-separated)",
-        //   placeHolder: "localhost:9092",
-        // });
-        // if (!brokersInput) {
-        //   return;
-        // }
-
-        // const brokers = brokersInput
-        //   .split(",")
-        //   .map((b) => b.trim())
-        //   .filter((b) => b.length > 0);
-        // if (brokers.length === 0) {
-        //   vscode.window.showErrorMessage(
-        //     "At least one broker address is required.",
-        //   );
-        //   return;
-        // }
-
-        await manager.updateClusterName(item.id, name);
+        await manager.updateClusterName(item.cluster.id, name.trim());
         treeProvider.refresh();
+      },
+    ),
+
+    vscode.commands.registerCommand(
+      "kafka-manager.copyBootstrapServers",
+      async (item: ClusterTreeItem) => {
+        await vscode.env.clipboard.writeText(item.cluster.brokers.join(","));
+        vscode.window.setStatusBarMessage(
+          `Copied bootstrap servers for "${item.cluster.name}"`,
+          3000,
+        );
       },
     ),
 
@@ -176,6 +190,9 @@ export function activate(context: vscode.ExtensionContext): void {
           vscode.window.showInformationMessage(`Topic "${topic}" created.`);
           treeProvider.refresh();
         } catch (error) {
+          manager.log(
+            `Failed to create topic "${topic}" on cluster "${cluster.name}": ${describeError(error)}`,
+          );
           vscode.window.showErrorMessage(
             `Failed to create topic: ${describeError(error)}`,
           );
@@ -453,6 +470,46 @@ export function activate(context: vscode.ExtensionContext): void {
             `Failed to set offset: ${describeError(error)}`,
           );
         }
+      },
+    ),
+
+    vscode.commands.registerCommand(
+      "kafka-manager.openDashboard",
+      async (item?: ClusterTreeItem) => {
+        let cluster = item?.cluster;
+        if (!cluster) {
+          const clusters = manager.getClusters();
+          if (clusters.length === 0) {
+            vscode.window.showInformationMessage(
+              "No Kafka clusters configured. Add one first.",
+            );
+            return;
+          }
+          const picked = await vscode.window.showQuickPick(
+            clusters.map((c) => ({
+              label: c.name,
+              description: c.brokers.join(", "),
+              detail: manager.getStatus(c.id),
+              cluster: c,
+            })),
+            { placeHolder: "Select a cluster to open its dashboard" },
+          );
+          cluster = picked?.cluster;
+        }
+        if (!cluster) {
+          return;
+        }
+        if (manager.getStatus(cluster.id) !== "connected") {
+          try {
+            await manager.connect(cluster);
+          } catch (error) {
+            vscode.window.showErrorMessage(
+              `Failed to connect to "${cluster.name}": ${describeError(error)}`,
+            );
+            return;
+          }
+        }
+        DashboardPanel.createOrShow(manager, cluster);
       },
     ),
 
