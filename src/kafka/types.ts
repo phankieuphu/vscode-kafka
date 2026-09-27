@@ -22,6 +22,7 @@ export interface GroupOffsetEntry {
   topic: string;
   partition: number;
   offset: string;
+  low: string;
   high: string;
   lag: string;
 }
@@ -32,6 +33,7 @@ export interface ConsumedMessage {
   key: string | null;
   value: string | null;
   timestamp: string;
+  headers: Record<string, string>;
 }
 
 export interface GroupMemberAssignment {
@@ -99,4 +101,45 @@ export interface ClusterOverview {
     groups: number;
     totalLag: string;
   };
+}
+
+export interface PartitionDetail extends PartitionInfo {
+  low: string;
+  high: string;
+  messageCount: string;
+}
+
+export interface TopicDetails {
+  name: string;
+  partitions: PartitionDetail[];
+  replicationFactor: number;
+  underReplicated: number;
+  offline: number;
+  messageCount: string;
+}
+
+export interface TopicConfigEntry {
+  name: string;
+  value: string;
+  isDefault: boolean;
+  readOnly: boolean;
+  isSensitive: boolean;
+}
+
+export interface ProduceOptions {
+  key?: string;
+  value: string;
+  partition?: number;
+  headers?: Record<string, string>;
+}
+
+export type ResetSpec =
+  | { mode: "earliest" | "latest" }
+  | { mode: "timestamp"; timestamp: number }
+  | { mode: "shift"; by: number };
+
+export interface OffsetMove {
+  partition: number;
+  from: string;
+  to: string;
 }

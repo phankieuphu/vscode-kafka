@@ -135,3 +135,33 @@ export function buildClusterOverview(raw: RawClusterSnapshot): ClusterOverview {
     },
   };
 }
+
+export interface ClusterIssue {
+  level: "crit" | "warn";
+  kind: "cluster" | "topic" | "group";
+  name?: string;
+  text: string;
+}
+
+export function listIssues(overview: ClusterOverview): ClusterIssue[] {
+  const issues: ClusterIssue[] = [];
+  if (overview.controllerId === null) {
+    issues.push({ level: "crit", kind: "cluster", text: "No active controller" });
+  }
+  for (const t of overview.topics) {
+    if (t.offline > 0) {
+      issues.push({ level: "crit", kind: "topic", name: t.name, text: `${t.offline} offline partition${t.offline === 1 ? "" : "s"} in` });
+    }
+  }
+  for (const t of overview.topics) {
+    if (t.underReplicated > 0) {
+      issues.push({ level: "warn", kind: "topic", name: t.name, text: `${t.underReplicated} under-replicated partition${t.underReplicated === 1 ? "" : "s"} in` });
+    }
+  }
+  for (const g of overview.groups) {
+    if (g.state === "Empty" && BigInt(g.totalLag) > 0n) {
+      issues.push({ level: "warn", kind: "group", name: g.groupId, text: "has lag but no members" });
+    }
+  }
+  return issues;
+}

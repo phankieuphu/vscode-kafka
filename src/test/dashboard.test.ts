@@ -1,5 +1,5 @@
 import * as assert from 'assert';
-import { buildClusterOverview, RawClusterSnapshot } from '../kafka/dashboard';
+import { buildClusterOverview, listIssues, RawClusterSnapshot } from '../kafka/dashboard';
 
 function snapshot(overrides: Partial<RawClusterSnapshot> = {}): RawClusterSnapshot {
 	return {
@@ -91,5 +91,25 @@ suite('buildClusterOverview', () => {
 		assert.deepStrictEqual(overview.totals, {
 			brokers: 2, topics: 0, partitions: 0, underReplicated: 0, offline: 0, groups: 0, totalLag: '0',
 		});
+	});
+
+	test('lists critical issues before warnings, naming what to open', () => {
+		const overview = buildClusterOverview(snapshot({
+			groups: [{ groupId: 'etl', state: 'Empty', memberCount: 0, offsets: [{ topic: 'orders', partitions: [{ partition: 0, offset: '100' }] }] }],
+		}));
+
+		assert.deepStrictEqual(listIssues(overview), [
+			{ level: 'crit', kind: 'topic', name: 'orders', text: '1 offline partition in' },
+			{ level: 'warn', kind: 'topic', name: 'orders', text: '2 under-replicated partitions in' },
+			{ level: 'warn', kind: 'group', name: 'etl', text: 'has lag but no members' },
+		]);
+	});
+
+	test('reports a missing controller and nothing for a healthy cluster', () => {
+		const healthy = snapshot({ topics: [], groups: [] });
+		assert.deepStrictEqual(listIssues(buildClusterOverview(healthy)), []);
+		assert.deepStrictEqual(listIssues(buildClusterOverview({ ...healthy, controllerId: null })), [
+			{ level: 'crit', kind: 'cluster', text: 'No active controller' },
+		]);
 	});
 });

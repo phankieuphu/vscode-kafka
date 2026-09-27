@@ -5,9 +5,19 @@ import { ClusterConfig, GroupOffsetEntry, PartitionInfo, TopicInfo } from "../ka
 
 export class ClusterTreeItem extends vscode.TreeItem {
   readonly kind = "cluster" as const;
-  constructor(readonly cluster: ClusterConfig, status: string) {
+  constructor(readonly cluster: ClusterConfig, status: string, lastError?: string) {
     super(cluster.name, vscode.TreeItemCollapsibleState.Collapsed);
-    this.description = `${cluster.brokers.join(", ")} (${status})`;
+    const brokerCount = `${cluster.brokers.length} broker${cluster.brokers.length === 1 ? "" : "s"}`;
+    this.description =
+      status === "connected" ? brokerCount
+      : status === "connecting" ? "connecting…"
+      : status === "error" ? lastError ?? "connection failed"
+      : "disconnected";
+    this.tooltip = new vscode.MarkdownString(
+      `**${escapeMarkdown(cluster.name)}** — ${status}\n\n` +
+        cluster.brokers.map((b) => `- \`${b}\``).join("\n") +
+        (status === "error" && lastError ? `\n\n${escapeMarkdown(lastError)}` : "")
+    );
     this.contextValue = `kafkaCluster-${status}`;
     this.iconPath = clusterIcon(status);
     if (status !== "connected") {
@@ -21,6 +31,10 @@ export class ClusterTreeItem extends vscode.TreeItem {
       };
     }
   }
+}
+
+function escapeMarkdown(text: string): string {
+  return text.replace(/[\\`*_{}[\]()#+\-.!|<>]/g, "\\$&");
 }
 
 function clusterIcon(status: string): vscode.ThemeIcon {
@@ -58,9 +72,28 @@ export class TopicTreeItem extends vscode.TreeItem {
   readonly kind = "topic" as const;
   constructor(readonly cluster: ClusterConfig, readonly topic: TopicInfo) {
     super(topic.name, vscode.TreeItemCollapsibleState.Collapsed);
-    this.description = `${topic.partitions.length} partition${topic.partitions.length === 1 ? "" : "s"}`;
+    const count = topic.partitions.length;
+    const offline = topic.partitions.filter((p) => p.leader < 0).length;
+    const underReplicated = topic.partitions.filter((p) => p.isr.length < p.replicas.length).length;
+    const replication = Math.max(0, ...topic.partitions.map((p) => p.replicas.length));
+    const partitionsText = `${count} partition${count === 1 ? "" : "s"}`;
+    this.description =
+      offline > 0 ? `${offline} offline`
+      : underReplicated > 0 ? `${underReplicated} under-replicated`
+      : partitionsText;
+    const health =
+      offline > 0 ? `$(error) ${offline} partition${offline === 1 ? "" : "s"} offline`
+      : underReplicated > 0 ? `$(warning) ${underReplicated} partition${underReplicated === 1 ? "" : "s"} under-replicated`
+      : "$(pass) All partitions in sync";
+    this.tooltip = new vscode.MarkdownString(
+      `**${escapeMarkdown(topic.name)}**\n\n${partitionsText} · RF ${replication}\n\n${health}`,
+      true
+    );
     this.contextValue = "kafkaTopic";
-    this.iconPath = new vscode.ThemeIcon("list-unordered");
+    this.iconPath = new vscode.ThemeIcon(
+      "circle-filled",
+      new vscode.ThemeColor(offline > 0 ? "charts.red" : underReplicated > 0 ? "charts.yellow" : "charts.green")
+    );
     this.command = {
       command: "kafka-manager.viewTopic",
       title: "Browse Messages",
@@ -154,7 +187,10 @@ export class KafkaTreeProvider implements vscode.TreeDataProvider<KafkaTreeNode>
       if (!element) {
         return this.manager
           .getClusters()
-          .map((cluster) => new ClusterTreeItem(cluster, this.manager.getStatus(cluster.id)));
+          .map(
+            (cluster) =>
+              new ClusterTreeItem(cluster, this.manager.getStatus(cluster.id), this.manager.getLastError(cluster.id))
+          );
       }
 
       switch (element.kind) {
