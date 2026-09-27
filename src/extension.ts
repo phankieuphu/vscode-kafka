@@ -11,6 +11,7 @@ import {
 } from "./tree/kafkaTreeProvider";
 import { TopicPanel } from "./panels/topicPanel";
 import { GroupPanel } from "./panels/groupPanel";
+import { DashboardPanel } from "./panels/dashboardPanel";
 
 export function activate(context: vscode.ExtensionContext): void {
   const manager = new ClusterManager();
@@ -453,6 +454,46 @@ export function activate(context: vscode.ExtensionContext): void {
             `Failed to set offset: ${describeError(error)}`,
           );
         }
+      },
+    ),
+
+    vscode.commands.registerCommand(
+      "kafka-manager.openDashboard",
+      async (item?: ClusterTreeItem) => {
+        let cluster = item?.cluster;
+        if (!cluster) {
+          const clusters = manager.getClusters();
+          if (clusters.length === 0) {
+            vscode.window.showInformationMessage(
+              "No Kafka clusters configured. Add one first.",
+            );
+            return;
+          }
+          const picked = await vscode.window.showQuickPick(
+            clusters.map((c) => ({
+              label: c.name,
+              description: c.brokers.join(", "),
+              detail: manager.getStatus(c.id),
+              cluster: c,
+            })),
+            { placeHolder: "Select a cluster to open its dashboard" },
+          );
+          cluster = picked?.cluster;
+        }
+        if (!cluster) {
+          return;
+        }
+        if (manager.getStatus(cluster.id) !== "connected") {
+          try {
+            await manager.connect(cluster);
+          } catch (error) {
+            vscode.window.showErrorMessage(
+              `Failed to connect to "${cluster.name}": ${describeError(error)}`,
+            );
+            return;
+          }
+        }
+        DashboardPanel.createOrShow(manager, cluster);
       },
     ),
 

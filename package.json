@@ -78,6 +78,16 @@
       ],
       "view/item/context": [
         {
+          "command": "kafka-manager.openDashboard",
+          "when": "view == kafkaExplorer && viewItem == kafkaCluster-connected",
+          "group": "inline@0"
+        },
+        {
+          "command": "kafka-manager.openDashboard",
+          "when": "view == kafkaExplorer && viewItem == kafkaCluster-connected",
+          "group": "0_connection@0"
+        },
+        {
           "command": "kafka-manager.connectCluster",
           "when": "view == kafkaExplorer && viewItem =~ /^kafkaCluster-/",
           "group": "inline@1"
@@ -218,6 +228,11 @@
         "command": "kafka-manager.editGroupOffset",
         "title": "Kafka: Edit Offset...",
         "icon": "$(edit)"
+      },
+      {
+        "command": "kafka-manager.openDashboard",
+        "title": "Kafka: Open Cluster Dashboard",
+        "icon": "$(dashboard)"
       },
       {
         "command": "kafka-manager.showOutput",

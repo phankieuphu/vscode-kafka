@@ -7,8 +7,10 @@ import {
   GroupOverview,
   ITopicMetadata,
 } from "kafkajs";
+import { buildClusterOverview, RawGroup, RawWatermark } from "./dashboard";
 import {
   ClusterConfig,
+  ClusterOverview,
   ConnectionStatus,
   ConsumedMessage,
   GroupDetails,
@@ -354,6 +356,63 @@ export class ClusterManager implements vscode.Disposable {
     return entries.sort(
       (a, b) => a.topic.localeCompare(b.topic) || a.partition - b.partition,
     );
+  }
+
+  /**
+   * Collects everything the cluster dashboard shows in one pass: broker
+   * layout, partition health, topic sizes and per-group lag. Watermarks are
+   * fetched once per topic and shared by every group's lag calculation.
+   */
+  async getClusterOverview(cluster: ClusterConfig): Promise<ClusterOverview> {
+    const admin = this.ensureAdmin(cluster);
+    const [description, topics, groupList] = await Promise.all([
+      admin.describeCluster(),
+      this.listTopics(cluster),
+      admin.listGroups(),
+    ]);
+
+    const groupIds = groupList.groups.map((g) => g.groupId);
+    const [watermarkEntries, described, groupOffsets] = await Promise.all([
+      Promise.all(
+        topics.map(async (t) => {
+          try {
+            return [t.name, await admin.fetchTopicOffsets(t.name)] as const;
+          } catch (error) {
+            this.log(`Dashboard: failed to fetch offsets for "${t.name}": ${describeError(error)}`);
+            return [t.name, [] as RawWatermark[]] as const;
+          }
+        }),
+      ),
+      groupIds.length > 0 ? admin.describeGroups(groupIds) : Promise.resolve({ groups: [] }),
+      Promise.all(
+        groupIds.map((groupId) =>
+          admin.fetchOffsets({ groupId }).catch((error) => {
+            this.log(`Dashboard: failed to fetch offsets for group "${groupId}": ${describeError(error)}`);
+            return [];
+          }),
+        ),
+      ),
+    ]);
+
+    const watermarks = new Map<string, RawWatermark[]>(watermarkEntries);
+    const groups: RawGroup[] = groupIds.map((groupId, i) => {
+      const info = described.groups.find((g) => g.groupId === groupId);
+      return {
+        groupId,
+        state: info?.state ?? "Unknown",
+        memberCount: info?.members.length ?? 0,
+        offsets: groupOffsets[i],
+      };
+    });
+
+    return buildClusterOverview({
+      clusterId: description.clusterId,
+      controllerId: description.controller,
+      brokers: description.brokers,
+      topics,
+      watermarks,
+      groups,
+    });
   }
 
   async produce(

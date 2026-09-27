@@ -4,6 +4,7 @@ Manage Apache Kafka clusters directly from VS Code: connect to one or more clust
 
 ## Features
 
+- **Cluster dashboard** — click the dashboard icon on a connected cluster (or run **Kafka: Open Cluster Dashboard**) for a one-page health view: broker, topic, partition and group counts; under-replicated and offline partitions; total consumer lag; a per-broker leader distribution; and sortable, filterable topic and consumer-group tables. Click a row to open that topic or group. Optional auto-refresh every 10/30/60 seconds.
 - **Cluster explorer** — a "Kafka" activity bar view lists your configured clusters. Connect/disconnect per cluster from inline icons.
 - **Topics** — expand a cluster to see its topics, and a topic to see its partitions (leader, replicas, in-sync replicas).
 - **Consumer groups** — expand "Consumer Groups" to see each group and its per-partition committed offset, high-water mark, and lag.
