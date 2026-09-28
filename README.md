@@ -60,6 +60,22 @@ Network access to your Kafka broker(s). No local Kafka installation is required 
 
 ## Release Notes
 
+See [CHANGELOG.md](CHANGELOG.md) for the full history.
+
+### 0.1.0
+
+- **New: Cluster dashboard** — health tiles, an issues banner, broker leader distribution, topic sizes and consumer-group lag in one panel, with filtering, sorting, auto-refresh, and click-through to topic and group panels. Failed refreshes keep the last good data on screen, marked stale.
+- **New: Status bar item** showing connected clusters and open issues.
+- **Explorer** — welcome view, topic health dots and tooltips, last connection error on the cluster, and Copy Bootstrap Servers, Rename and Create Topic in the cluster menu. Add Cluster now validates `host:port` and connects immediately.
+- **Topic panel redesign** — Messages / Partitions / Configuration tabs, live tail with pause, partition filter and search, message detail with headers and highlighted JSON, and produce with partition and headers.
+- **Consumer group panel redesign** — members with assignments, per-partition lag, and Reset Offsets (earliest, latest, timestamp, shift by N) with a preview.
+- **Fixes** — Rename Cluster always failing, Create Topic reporting success for an existing topic, the admin client left open after a failed connection, and consumer group offsets not refreshing.
+
+### 0.0.4
+
+- CI/CD: tests on Linux, Windows and macOS, `.vsix` packaging, and Marketplace publishing on `v*` tags.
+- Fixed the test build and the cluster name not updating after a rename.
+
 ### 0.0.1
 
 Initial release: cluster explorer, topic/partition browsing, consumer group lag, message tailing and producing, topic create/delete.
