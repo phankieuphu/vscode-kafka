@@ -8,6 +8,7 @@ import {
   Kafka,
   GroupOverview,
   ITopicMetadata,
+  Producer,
 } from "kafkajs";
 import { buildClusterOverview, RawGroup, RawWatermark } from "./dashboard";
 import { planReset } from "./offsets";
@@ -72,6 +73,8 @@ export class ClusterManager implements vscode.Disposable {
 
   private readonly _onDidChangeClusters = new vscode.EventEmitter<void>();
   readonly onDidChangeClusters = this._onDidChangeClusters.event;
+
+  private readonly producers = new Map<string, Promise<Producer>>();
 
   getClusters(): ClusterConfig[] {
     return vscode.workspace
@@ -349,7 +352,9 @@ export class ClusterManager implements vscode.Disposable {
     try {
       await consumer.connect();
       await consumer.subscribe({ topic, fromBeginning });
-      const running = consumer.run({ eachMessage: async () => undefined });
+      const running = consumer.run({
+        eachMessage: async () => undefined,
+      });
       await Promise.race([
         running,
         new Promise((resolve) => setTimeout(resolve, 3000)),
@@ -550,13 +555,23 @@ export class ClusterManager implements vscode.Disposable {
     return moves;
   }
 
+  private getProducer(cluster: ClusterConfig): Promise<Producer> {
+    let p = this.producers.get(cluster.id);
+    if (!p) {
+      const producer = this.getKafka(cluster).producer();
+      p = producer.connect().then(() => producer);
+      p.catch(() => this.producers.delete(cluster.id));
+      this.producers.set(cluster.id, p);
+    }
+    return p;
+  }
+
   async produce(
     cluster: ClusterConfig,
     topic: string,
     options: ProduceOptions,
   ): Promise<void> {
-    const producer = this.getKafka(cluster).producer();
-    await producer.connect();
+    const producer = await this.getProducer(cluster);
     try {
       await producer.send({
         topic,
@@ -654,48 +669,55 @@ export class ClusterManager implements vscode.Disposable {
     });
     const collected: ConsumedMessage[] = [];
 
-    await consumer.connect();
-    await consumer.subscribe({ topic, fromBeginning: false });
+    try {
+      await consumer.connect();
+      await consumer.subscribe({ topic, fromBeginning: false });
 
-    await new Promise<void>((resolve) => {
-      let settled = false;
-      const finish = () => {
-        if (!settled) {
-          settled = true;
-          resolve();
-        }
-      };
-      const timeout = setTimeout(finish, 15000);
+      await new Promise<void>((resolve) => {
+        let settled = false;
+        const finish = () => {
+          if (!settled) {
+            settled = true;
+            resolve();
+          }
+        };
+        const timeout = setTimeout(finish, 15000);
 
-      consumer
-        .run({
-          eachMessage: async ({ partition, message }) => {
-            collected.push({
-              partition,
-              offset: message.offset,
-              key: message.key?.toString() ?? null,
-              value: message.value?.toString() ?? null,
-              timestamp: message.timestamp,
-              headers: decodeHeaders(message.headers),
-            });
-            const target = targets.get(partition);
-            if (target !== undefined && BigInt(message.offset) + 1n >= target) {
-              targets.delete(partition);
-              if (targets.size === 0) {
-                clearTimeout(timeout);
-                finish();
+        consumer
+          .run({
+            eachMessage: async ({ partition, message }) => {
+              collected.push({
+                partition,
+                offset: message.offset,
+                key: message.key?.toString() ?? null,
+                value: message.value?.toString() ?? null,
+                timestamp: message.timestamp,
+                headers: decodeHeaders(message.headers),
+              });
+              const target = targets.get(partition);
+              if (
+                target !== undefined &&
+                BigInt(message.offset) + 1n >= target
+              ) {
+                targets.delete(partition);
+                if (targets.size === 0) {
+                  clearTimeout(timeout);
+                  finish();
+                }
               }
-            }
-          },
-        })
-        .catch(() => finish());
+            },
+          })
+          .catch(() => finish());
 
-      for (const [partition, offset] of startOffsets) {
-        consumer.seek({ topic, partition, offset });
-      }
-    });
+        for (const [partition, offset] of startOffsets) {
+          consumer.seek({ topic, partition, offset });
+        }
+      });
+    } finally {
+      // handle leak consumer
+      await consumer.disconnect().catch(() => undefined);
+    }
 
-    await consumer.disconnect();
     collected.sort(
       (a, b) =>
         a.partition - b.partition ||
