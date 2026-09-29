@@ -1,22 +1,36 @@
 import * as vscode from "vscode";
 import { GroupOverview } from "kafkajs";
 import { describeError, ClusterManager } from "../kafka/clusterManager";
-import { ClusterConfig, GroupOffsetEntry, PartitionInfo, TopicInfo } from "../kafka/types";
+import {
+  ClusterConfig,
+  GroupOffsetEntry,
+  PartitionInfo,
+  TopicInfo,
+} from "../kafka/types";
 
 export class ClusterTreeItem extends vscode.TreeItem {
   readonly kind = "cluster" as const;
-  constructor(readonly cluster: ClusterConfig, status: string, lastError?: string) {
+  constructor(
+    readonly cluster: ClusterConfig,
+    status: string,
+    lastError?: string,
+  ) {
     super(cluster.name, vscode.TreeItemCollapsibleState.Collapsed);
     const brokerCount = `${cluster.brokers.length} broker${cluster.brokers.length === 1 ? "" : "s"}`;
     this.description =
-      status === "connected" ? brokerCount
-      : status === "connecting" ? "connecting…"
-      : status === "error" ? lastError ?? "connection failed"
-      : "disconnected";
+      status === "connected"
+        ? brokerCount
+        : status === "connecting"
+          ? "connecting…"
+          : status === "error"
+            ? (lastError ?? "connection failed")
+            : "disconnected";
     this.tooltip = new vscode.MarkdownString(
       `**${escapeMarkdown(cluster.name)}** — ${status}\n\n` +
         cluster.brokers.map((b) => `- \`${b}\``).join("\n") +
-        (status === "error" && lastError ? `\n\n${escapeMarkdown(lastError)}` : "")
+        (status === "error" && lastError
+          ? `\n\n${escapeMarkdown(lastError)}`
+          : ""),
     );
     this.contextValue = `kafkaCluster-${status}`;
     this.iconPath = clusterIcon(status);
@@ -40,7 +54,10 @@ function escapeMarkdown(text: string): string {
 function clusterIcon(status: string): vscode.ThemeIcon {
   switch (status) {
     case "connected":
-      return new vscode.ThemeIcon("vm-active", new vscode.ThemeColor("charts.green"));
+      return new vscode.ThemeIcon(
+        "vm-active",
+        new vscode.ThemeColor("charts.green"),
+      );
     case "connecting":
       return new vscode.ThemeIcon("sync~spin");
     case "error":
@@ -70,29 +87,47 @@ export class GroupsFolderTreeItem extends vscode.TreeItem {
 
 export class TopicTreeItem extends vscode.TreeItem {
   readonly kind = "topic" as const;
-  constructor(readonly cluster: ClusterConfig, readonly topic: TopicInfo) {
+  constructor(
+    readonly cluster: ClusterConfig,
+    readonly topic: TopicInfo,
+  ) {
     super(topic.name, vscode.TreeItemCollapsibleState.Collapsed);
     const count = topic.partitions.length;
     const offline = topic.partitions.filter((p) => p.leader < 0).length;
-    const underReplicated = topic.partitions.filter((p) => p.isr.length < p.replicas.length).length;
-    const replication = Math.max(0, ...topic.partitions.map((p) => p.replicas.length));
+    const underReplicated = topic.partitions.filter(
+      (p) => p.isr.length < p.replicas.length,
+    ).length;
+    const replication = Math.max(
+      0,
+      ...topic.partitions.map((p) => p.replicas.length),
+    );
     const partitionsText = `${count} partition${count === 1 ? "" : "s"}`;
     this.description =
-      offline > 0 ? `${offline} offline`
-      : underReplicated > 0 ? `${underReplicated} under-replicated`
-      : partitionsText;
+      offline > 0
+        ? `${offline} offline`
+        : underReplicated > 0
+          ? `${underReplicated} under-replicated`
+          : partitionsText;
     const health =
-      offline > 0 ? `$(error) ${offline} partition${offline === 1 ? "" : "s"} offline`
-      : underReplicated > 0 ? `$(warning) ${underReplicated} partition${underReplicated === 1 ? "" : "s"} under-replicated`
-      : "$(pass) All partitions in sync";
+      offline > 0
+        ? `$(error) ${offline} partition${offline === 1 ? "" : "s"} offline`
+        : underReplicated > 0
+          ? `$(warning) ${underReplicated} partition${underReplicated === 1 ? "" : "s"} under-replicated`
+          : "$(pass) All partitions in sync";
     this.tooltip = new vscode.MarkdownString(
       `**${escapeMarkdown(topic.name)}**\n\n${partitionsText} · RF ${replication}\n\n${health}`,
-      true
+      true,
     );
     this.contextValue = "kafkaTopic";
     this.iconPath = new vscode.ThemeIcon(
       "circle-filled",
-      new vscode.ThemeColor(offline > 0 ? "charts.red" : underReplicated > 0 ? "charts.yellow" : "charts.green")
+      new vscode.ThemeColor(
+        offline > 0
+          ? "charts.red"
+          : underReplicated > 0
+            ? "charts.yellow"
+            : "charts.green",
+      ),
     );
     this.command = {
       command: "kafka-manager.viewTopic",
@@ -107,9 +142,12 @@ export class PartitionTreeItem extends vscode.TreeItem {
   constructor(
     readonly cluster: ClusterConfig,
     readonly topicName: string,
-    readonly partition: PartitionInfo
+    readonly partition: PartitionInfo,
   ) {
-    super(`Partition ${partition.partitionId}`, vscode.TreeItemCollapsibleState.None);
+    super(
+      `Partition ${partition.partitionId}`,
+      vscode.TreeItemCollapsibleState.None,
+    );
     this.description = `leader: ${partition.leader}, replicas: [${partition.replicas.join(", ")}], isr: [${partition.isr.join(", ")}]`;
     this.contextValue = "kafkaPartition";
     this.iconPath = new vscode.ThemeIcon("circle-small-filled");
@@ -118,7 +156,10 @@ export class PartitionTreeItem extends vscode.TreeItem {
 
 export class GroupTreeItem extends vscode.TreeItem {
   readonly kind = "group" as const;
-  constructor(readonly cluster: ClusterConfig, readonly group: GroupOverview) {
+  constructor(
+    readonly cluster: ClusterConfig,
+    readonly group: GroupOverview,
+  ) {
     super(group.groupId, vscode.TreeItemCollapsibleState.Collapsed);
     this.contextValue = "kafkaGroup";
     this.iconPath = new vscode.ThemeIcon("organization");
@@ -132,14 +173,23 @@ export class GroupTreeItem extends vscode.TreeItem {
 
 export class GroupOffsetTreeItem extends vscode.TreeItem {
   readonly kind = "groupOffset" as const;
-  constructor(readonly cluster: ClusterConfig, readonly groupId: string, readonly entry: GroupOffsetEntry) {
-    super(`${entry.topic} - partition ${entry.partition}`, vscode.TreeItemCollapsibleState.None);
+  constructor(
+    readonly cluster: ClusterConfig,
+    readonly groupId: string,
+    readonly entry: GroupOffsetEntry,
+  ) {
+    super(
+      `${entry.topic} - partition ${entry.partition}`,
+      vscode.TreeItemCollapsibleState.None,
+    );
     this.description = `offset ${entry.offset} / high ${entry.high} (lag ${entry.lag})`;
     this.contextValue = "kafkaGroupOffset";
     const hasLag = entry.lag !== "0";
     this.iconPath = new vscode.ThemeIcon(
       hasLag ? "warning" : "check",
-      hasLag ? new vscode.ThemeColor("charts.yellow") : new vscode.ThemeColor("charts.green")
+      hasLag
+        ? new vscode.ThemeColor("charts.yellow")
+        : new vscode.ThemeColor("charts.green"),
     );
   }
 }
@@ -189,25 +239,39 @@ export class KafkaTreeProvider implements vscode.TreeDataProvider<KafkaTreeNode>
           .getClusters()
           .map(
             (cluster) =>
-              new ClusterTreeItem(cluster, this.manager.getStatus(cluster.id), this.manager.getLastError(cluster.id))
+              new ClusterTreeItem(
+                cluster,
+                this.manager.getStatus(cluster.id),
+                this.manager.getLastError(cluster.id),
+              ),
           );
       }
 
       switch (element.kind) {
         case "cluster":
-          return [new TopicsFolderTreeItem(element.cluster), new GroupsFolderTreeItem(element.cluster)];
+          return [
+            new TopicsFolderTreeItem(element.cluster),
+            new GroupsFolderTreeItem(element.cluster),
+          ];
 
         case "topicsFolder": {
           const topics = await this.manager.listTopics(element.cluster);
           if (topics.length === 0) {
             return [new MessageTreeItem("No topics")];
           }
-          return topics.map((topic) => new TopicTreeItem(element.cluster, topic));
+          return topics.map(
+            (topic) => new TopicTreeItem(element.cluster, topic),
+          );
         }
 
         case "topic":
           return element.topic.partitions.map(
-            (partition) => new PartitionTreeItem(element.cluster, element.topic.name, partition)
+            (partition) =>
+              new PartitionTreeItem(
+                element.cluster,
+                element.topic.name,
+                partition,
+              ),
           );
 
         case "groupsFolder": {
@@ -215,16 +279,26 @@ export class KafkaTreeProvider implements vscode.TreeDataProvider<KafkaTreeNode>
           if (groups.length === 0) {
             return [new MessageTreeItem("No consumer groups")];
           }
-          return groups.map((group) => new GroupTreeItem(element.cluster, group));
+          return groups.map(
+            (group) => new GroupTreeItem(element.cluster, group),
+          );
         }
 
         case "group": {
-          const entries = await this.manager.fetchGroupOffsets(element.cluster, element.group.groupId);
+          const entries = await this.manager.fetchGroupOffsets(
+            element.cluster,
+            element.group.groupId,
+          );
           if (entries.length === 0) {
             return [new MessageTreeItem("No committed offsets")];
           }
           return entries.map(
-            (entry) => new GroupOffsetTreeItem(element.cluster, element.group.groupId, entry)
+            (entry) =>
+              new GroupOffsetTreeItem(
+                element.cluster,
+                element.group.groupId,
+                entry,
+              ),
           );
         }
 
