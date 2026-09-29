@@ -516,6 +516,31 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand("kafka-manager.showOutput", () =>
       manager.showOutput(),
     ),
+
+    vscode.commands.registerCommand(
+      "kafka-manager.reconnectCluster",
+      async (item: ClusterTreeItem) => {
+        try {
+          await manager.reconnect(item.cluster);
+        } catch (error) {
+          vscode.window.showErrorMessage(
+            `Could not reconnect to "${item.cluster.name}": ${describeError(error)}`,
+          );
+        }
+      },
+    ),
+
+    manager.onDidLoseConnection(async (cluster) => {
+      const choice = await vscode.window.showWarningMessage(
+        `Lost connection to "${cluster.name}": ${manager.getLastError(cluster.id)}`,
+        "Reconnect",
+      );
+      if (choice === "Reconnect") {
+        vscode.commands.executeCommand("kafka-manager.reconnectCluster", {
+          cluster,
+        });
+      }
+    }),
   );
 }
 

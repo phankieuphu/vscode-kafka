@@ -88,26 +88,6 @@
           "group": "0_connection@0"
         },
         {
-          "command": "kafka-manager.connectCluster",
-          "when": "view == kafkaExplorer && viewItem =~ /^kafkaCluster-/",
-          "group": "inline@1"
-        },
-        {
-          "command": "kafka-manager.disconnectCluster",
-          "when": "view == kafkaExplorer && viewItem =~ /^kafkaCluster-/",
-          "group": "inline@2"
-        },
-        {
-          "command": "kafka-manager.connectCluster",
-          "when": "view == kafkaExplorer && viewItem =~ /^kafkaCluster-/",
-          "group": "0_connection@1"
-        },
-        {
-          "command": "kafka-manager.disconnectCluster",
-          "when": "view == kafkaExplorer && viewItem =~ /^kafkaCluster-/",
-          "group": "0_connection@2"
-        },
-        {
           "command": "kafka-manager.removeCluster",
           "when": "view == kafkaExplorer && viewItem =~ /^kafkaCluster-/",
           "group": "3_remove"
@@ -171,6 +151,36 @@
           "command": "kafka-manager.updateClusterName",
           "when": "view == kafkaExplorer && viewItem =~ /^kafkaCluster-/",
           "group": "1_actions@3"
+        },
+        {
+          "command": "kafka-manager.reconnectCluster",
+          "when": "view == kafkaExplorer && viewItem == kafkaCluster-error",
+          "group": "inline@1"
+        },
+        {
+          "command": "kafka-manager.reconnectCluster",
+          "when": "view == kafkaExplorer && viewItem == kafkaCluster-error",
+          "group": "0_connection@1"
+        },
+        {
+          "command": "kafka-manager.connectCluster",
+          "when": "view == kafkaExplorer && viewItem == kafkaCluster-disconnected",
+          "group": "inline@1"
+        },
+        {
+          "command": "kafka-manager.connectCluster",
+          "when": "view == kafkaExplorer && viewItem == kafkaCluster-disconnected",
+          "group": "0_connection@1"
+        },
+        {
+          "command": "kafka-manager.disconnectCluster",
+          "when": "view == kafkaExplorer && viewItem =~ /^kafkaCluster-(connected|connecting|error)$/",
+          "group": "inline@2"
+        },
+        {
+          "command": "kafka-manager.disconnectCluster",
+          "when": "view == kafkaExplorer && viewItem =~ /^kafkaCluster-(connected|connecting|error)$/",
+          "group": "0_connection@2"
         }
       ],
       "commandPalette": [
@@ -228,6 +238,10 @@
         },
         {
           "command": "kafka-manager.copyBootstrapServers",
+          "when": "false"
+        },
+        {
+          "command": "kafka-manager.reconnectCluster",
           "when": "false"
         }
       ]
@@ -319,6 +333,11 @@
         "command": "kafka-manager.copyBootstrapServers",
         "title": "Kafka: Copy Bootstrap Servers",
         "icon": "$(copy)"
+      },
+      {
+        "command": "kafka-manager.reconnectCluster",
+        "title": "Kafka: Reconnect",
+        "icon": "$(debug-restart)"
       }
     ],
     "viewsWelcome": [

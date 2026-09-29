@@ -80,6 +80,10 @@ export class ClusterManager implements vscode.Disposable {
 
   private readonly producers = new Map<string, Promise<Producer>>();
 
+  private readonly _onDidLoseConnection =
+    new vscode.EventEmitter<ClusterConfig>();
+  readonly onDidLoseConnection = this._onDidLoseConnection.event;
+
   getClusters(): ClusterConfig[] {
     return vscode.workspace
       .getConfiguration(CONFIG_SECTION)
@@ -751,6 +755,7 @@ export class ClusterManager implements vscode.Disposable {
     this.output.dispose();
     this._onDidChangeStatus.dispose();
     this._onDidChangeClusters.dispose();
+    this._onDidLoseConnection.dispose();
   }
 
   // Wraps `admin` so any call rejecting with a connections-class error drops
@@ -766,7 +771,7 @@ export class ClusterManager implements vscode.Disposable {
           if (result instanceof Promise) {
             return result.catch((error: unknown) => {
               if (isConnectionError(error)) {
-                this.handleConnList(cluster, guarded, error);
+                this.handleLost(cluster, guarded, error);
               }
               throw error;
             });
@@ -777,18 +782,22 @@ export class ClusterManager implements vscode.Disposable {
     });
     return guarded;
   }
-  private handleConnList(cluster: ClusterConfig, admin: Admin, error: unknown) {
+  private handleLost(cluster: ClusterConfig, admin: Admin, error: unknown) {
     if (this.admins.get(cluster.id) !== admin) {
       return;
     }
-    const exit = this.admins.delete(cluster.id);
-    if (!exit) {
-      return;
-    }
+    this.admins.delete(cluster.id);
     this.log(`Lost connection to "${cluster.name}": ${describeError(error)}`);
     admin.disconnect().catch(() => undefined);
     this.lastErrors.set(cluster.id, describeError(error));
     this.setStatus(cluster.id, "error");
+    // notify on subscribers
+    this._onDidLoseConnection.fire(cluster);
+  }
+
+  async reconnect(cluster: ClusterConfig): Promise<void> {
+    await this.disconnect(cluster.id);
+    await this.connect(cluster);
   }
 }
 
