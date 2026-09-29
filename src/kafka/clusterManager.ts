@@ -9,6 +9,10 @@ import {
   GroupOverview,
   ITopicMetadata,
   Producer,
+  KafkaJSNumberOfRetriesExceeded,
+  KafkaJSConnectionError,
+  KafkaJSRequestTimeoutError,
+  KafkaJSBrokerNotFound,
 } from "kafkajs";
 import { buildClusterOverview, RawGroup, RawWatermark } from "./dashboard";
 import { planReset } from "./offsets";
@@ -136,7 +140,11 @@ export class ClusterManager implements vscode.Disposable {
   private getKafka(cluster: ClusterConfig): Kafka {
     let kafka = this.kafkaInstances.get(cluster.id);
     if (!kafka) {
-      kafka = new Kafka({ clientId: "vscode-kafka", brokers: cluster.brokers });
+      kafka = new Kafka({
+        clientId: "vscode-kafka",
+        brokers: cluster.brokers,
+        requestTimeout: 10_000,
+      });
       this.kafkaInstances.set(cluster.id, kafka);
     }
     return kafka;
@@ -147,12 +155,14 @@ export class ClusterManager implements vscode.Disposable {
       return;
     }
     this.setStatus(cluster.id, "connecting");
-    const admin = this.getKafka(cluster).admin();
+    const admin = this.getKafka(cluster).admin({
+      retry: { retries: 2, initialRetryTime: 300, maxRetryTime: 2_000 },
+    });
     try {
       await admin.connect();
       // Cheap round-trip to confirm the brokers actually respond.
       await admin.listTopics();
-      this.admins.set(cluster.id, admin);
+      this.admins.set(cluster.id, this.guardAdmin(cluster, admin));
       this.lastErrors.delete(cluster.id);
       this.setStatus(cluster.id, "connected");
     } catch (error) {
@@ -742,6 +752,44 @@ export class ClusterManager implements vscode.Disposable {
     this._onDidChangeStatus.dispose();
     this._onDidChangeClusters.dispose();
   }
+
+  // Wraps `admin` so any call rejecting with a connections-class error drops
+  private guardAdmin(cluster: ClusterConfig, admin: Admin): Admin {
+    const guarded: Admin = new Proxy(admin, {
+      get: (target, prop, receiver) => {
+        const value = Reflect.get(target, prop, receiver);
+        if (typeof value !== "function") {
+          return value;
+        }
+        return (...args: unknown[]) => {
+          const result = value.apply(target, args);
+          if (result instanceof Promise) {
+            return result.catch((error: unknown) => {
+              if (isConnectionError(error)) {
+                this.handleConnList(cluster, guarded, error);
+              }
+              throw error;
+            });
+          }
+          return result;
+        };
+      },
+    });
+    return guarded;
+  }
+  private handleConnList(cluster: ClusterConfig, admin: Admin, error: unknown) {
+    if (this.admins.get(cluster.id) !== admin) {
+      return;
+    }
+    const exit = this.admins.delete(cluster.id);
+    if (!exit) {
+      return;
+    }
+    this.log(`Lost connection to "${cluster.name}": ${describeError(error)}`);
+    admin.disconnect().catch(() => undefined);
+    this.lastErrors.set(cluster.id, describeError(error));
+    this.setStatus(cluster.id, "error");
+  }
 }
 
 export function describeError(error: unknown): string {
@@ -749,4 +797,15 @@ export function describeError(error: unknown): string {
     return error.message;
   }
   return String(error);
+}
+
+export function isConnectionError(error: unknown): boolean {
+  if (error instanceof KafkaJSNumberOfRetriesExceeded) {
+    return isConnectionError(error.cause);
+  }
+  return (
+    error instanceof KafkaJSConnectionError ||
+    error instanceof KafkaJSRequestTimeoutError ||
+    error instanceof KafkaJSBrokerNotFound
+  );
 }
