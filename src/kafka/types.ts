@@ -1,7 +1,37 @@
+export type PasswordSaslMechanism = "plain" | "scram-sha-256" | "scram-sha-512";
+
+/** Passwords are never stored here; they live in VS Code's SecretStorage, keyed by cluster id. */
+export type ClusterSasl =
+  | { mechanism: PasswordSaslMechanism; username: string }
+  | {
+      mechanism: "aws-iam";
+      region: string;
+      /** AWS profile to sign with; the default credential chain when omitted. */
+      profile?: string;
+    };
+
+export interface ClusterSsl {
+  /** PEM file with the CA that signed the broker certificates; system CAs when omitted. */
+  caFile?: string;
+  /** Set to false to accept self-signed/untrusted certificates (dev clusters only). */
+  rejectUnauthorized?: boolean;
+}
+
 export interface ClusterConfig {
   id: string;
   name: string;
   brokers: string[];
+  /** TLS to the brokers: `true` for system CAs, an object for a custom CA or no verification. */
+  ssl?: boolean | ClusterSsl;
+  sasl?: ClusterSasl;
+}
+
+/** Connection security chosen in the Add Cluster / Edit Connection Security flows. */
+export interface ClusterSecurity {
+  ssl?: boolean | ClusterSsl;
+  sasl?: ClusterSasl;
+  /** New SASL password; undefined keeps whatever is already stored. */
+  password?: string;
 }
 
 export type ConnectionStatus = "disconnected" | "connecting" | "connected" | "error";

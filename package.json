@@ -3,7 +3,7 @@
   "displayName": "Kafka Manager",
   "description": "Manage Apache Kafka clusters from VS Code: browse topics and partitions, inspect consumer groups and lag, and produce/tail messages.",
   "publisher": "PatrickPhan",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "icon": "resources/icon.png",
   "license": "MIT",
   "repository": {
@@ -28,6 +28,12 @@
           "description": "Configured Kafka clusters. Managed via the 'Kafka: Add Cluster' command; edit by hand if you need to.",
           "items": {
             "type": "object",
+            "required": [
+              "id",
+              "name",
+              "brokers"
+            ],
+            "additionalProperties": false,
             "properties": {
               "id": {
                 "type": "string"
@@ -39,6 +45,66 @@
                 "type": "array",
                 "items": {
                   "type": "string"
+                }
+              },
+              "ssl": {
+                "description": "TLS to the brokers. `true` verifies against the system CAs; use an object for a private CA or to skip verification.",
+                "oneOf": [
+                  {
+                    "type": "boolean"
+                  },
+                  {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                      "caFile": {
+                        "type": "string",
+                        "description": "Path to a PEM file with the CA that signed the broker certificates."
+                      },
+                      "rejectUnauthorized": {
+                        "type": "boolean",
+                        "default": true,
+                        "description": "Set to false to accept self-signed certificates (dev clusters only)."
+                      }
+                    }
+                  }
+                ]
+              },
+              "sasl": {
+                "type": "object",
+                "description": "SASL authentication. Passwords are kept in VS Code's secret storage, never in settings; you'll be asked for one on connect if none is saved.",
+                "required": [
+                  "mechanism"
+                ],
+                "additionalProperties": false,
+                "properties": {
+                  "mechanism": {
+                    "type": "string",
+                    "enum": [
+                      "plain",
+                      "scram-sha-256",
+                      "scram-sha-512",
+                      "aws-iam"
+                    ],
+                    "enumDescriptions": [
+                      "SASL/PLAIN (e.g. Confluent Cloud API keys)",
+                      "SASL/SCRAM-SHA-256",
+                      "SASL/SCRAM-SHA-512 (Amazon MSK)",
+                      "Amazon MSK IAM, signed with your AWS credentials (TLS is always used)"
+                    ]
+                  },
+                  "username": {
+                    "type": "string",
+                    "description": "For plain/scram mechanisms."
+                  },
+                  "region": {
+                    "type": "string",
+                    "description": "For aws-iam: the MSK cluster's AWS region."
+                  },
+                  "profile": {
+                    "type": "string",
+                    "description": "For aws-iam: AWS profile to use; the default credential chain when omitted."
+                  }
                 }
               }
             }
@@ -153,6 +219,11 @@
           "group": "1_actions@3"
         },
         {
+          "command": "kafka-manager.editClusterSecurity",
+          "when": "view == kafkaExplorer && viewItem =~ /^kafkaCluster-/",
+          "group": "1_actions@4"
+        },
+        {
           "command": "kafka-manager.reconnectCluster",
           "when": "view == kafkaExplorer && viewItem == kafkaCluster-error",
           "group": "inline@1"
@@ -242,6 +313,10 @@
         },
         {
           "command": "kafka-manager.reconnectCluster",
+          "when": "false"
+        },
+        {
+          "command": "kafka-manager.editClusterSecurity",
           "when": "false"
         }
       ]
@@ -338,12 +413,17 @@
         "command": "kafka-manager.reconnectCluster",
         "title": "Kafka: Reconnect",
         "icon": "$(debug-restart)"
+      },
+      {
+        "command": "kafka-manager.editClusterSecurity",
+        "title": "Kafka: Edit Connection Security…",
+        "icon": "$(lock)"
       }
     ],
     "viewsWelcome": [
       {
         "view": "kafkaExplorer",
-        "contents": "No Kafka clusters yet. Add a cluster by entering its bootstrap servers, e.g. `localhost:9092`.\n[Add Cluster](command:kafka-manager.addCluster)\nPlaintext brokers only for now. Clusters are stored in the [kafka.clusters](command:workbench.action.openSettings?%5B%22kafka.clusters%22%5D) setting."
+        "contents": "No Kafka clusters yet. Add a cluster by entering its bootstrap servers, e.g. `localhost:9092`.\n[Add Cluster](command:kafka-manager.addCluster)\nSupports plaintext, TLS, SASL/PLAIN, SASL/SCRAM and Amazon MSK IAM. Clusters are stored in the [kafka.clusters](command:workbench.action.openSettings?%5B%22kafka.clusters%22%5D) setting; passwords go to VS Code's secret storage."
       }
     ]
   },
@@ -373,6 +453,7 @@
     "webpack-cli": "^5.1.4"
   },
   "dependencies": {
+    "aws-msk-iam-sasl-signer-js": "^1.0.3",
     "kafkajs": "^2.2.4"
   }
 }

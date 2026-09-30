@@ -45,22 +45,59 @@ Network access to your Kafka broker(s). No local Kafka installation is required 
 ## Getting started
 
 1. Open the Kafka view in the activity bar.
-2. Click **Add Cluster** (`+`) and enter a name and comma-separated broker list, e.g. `localhost:9092`.
+2. Click **Add Cluster** (`+`), enter a name and comma-separated broker list, e.g. `localhost:9092`, then choose how the cluster authenticates (a choice is suggested from the port/host).
 3. The cluster connects straight away; use the connect icon to reconnect later.
 4. Click the dashboard icon for a health overview, expand **Topics** or **Consumer Groups** to browse, or click a topic to open its panel.
 
+## Connecting to secured and remote clusters
+
+| Cluster | Choose |
+|---|---|
+| Local / Docker (`PLAINTEXT`) | No authentication, Plaintext |
+| Self-signed TLS dev cluster | No authentication, TLS, *Don't verify* or a CA file |
+| Amazon MSK, port 9094 | No authentication, TLS |
+| Amazon MSK, port 9096 | SASL/SCRAM-SHA-512, TLS |
+| Amazon MSK, port 9098 | AWS IAM (uses your AWS credential chain or a named profile; run `aws sso login` first if you use SSO) |
+| Confluent Cloud | SASL/PLAIN, TLS — the API key is the username, the secret the password |
+
+Change these later with **Edit Connection Security…** on the cluster's context menu. Passwords are kept in VS Code's secret storage, never in `settings.json`; if a cluster has SASL configured but no saved password (for example after Settings Sync to a new machine) you're asked for it on connect.
+
+When a connection fails, the error includes a hint about the likely cause. Common ones:
+
+- **Docker: `getaddrinfo ENOTFOUND kafka` (or another container name).** The bootstrap server answered but advertises an address VS Code can't reach. Set `KAFKA_ADVERTISED_LISTENERS` to an address reachable from your machine (e.g. `PLAINTEXT://localhost:9092`, with a separate internal listener for other containers).
+- **Docker: connection refused on localhost.** The container isn't running or the port isn't published (`-p 9092:9092`). From inside a dev container, use `host.docker.internal` instead of `localhost`.
+- **Amazon MSK: timeout or host not found.** MSK brokers are private to their VPC by default. Connect over VPN or an SSH tunnel, or enable public access (ports 9194/9196/9198) and allow your IP in the security group.
+
 ## Extension Settings
 
-* `kafka.clusters`: array of `{ id, name, brokers }` entries. Normally managed via the **Kafka: Add Cluster** / **Kafka: Remove Cluster** commands, but can be hand-edited in `settings.json`.
+* `kafka.clusters`: array of `{ id, name, brokers, ssl?, sasl? }` entries. Normally managed via the **Kafka: Add Cluster** / **Edit Connection Security…** / **Remove Cluster** commands, but can be hand-edited in `settings.json` — changes to brokers or security take effect immediately (a connected cluster reconnects). Example:
+
+  ```json
+  {
+    "id": "…",
+    "name": "MSK prod",
+    "brokers": ["b-1.prod.abc123.c2.kafka.us-east-1.amazonaws.com:9098"],
+    "sasl": { "mechanism": "aws-iam", "region": "us-east-1", "profile": "prod" }
+  }
+  ```
+
+  `ssl` is `true`, or `{ "caFile": "~/certs/ca.pem" }`, or `{ "rejectUnauthorized": false }`. `sasl.mechanism` is one of `plain`, `scram-sha-256`, `scram-sha-512` (with `username`) or `aws-iam` (with `region` and optional `profile`).
 
 ## Known Issues
 
-- Authenticated clusters (SASL/SSL) are not yet supported — only plaintext broker connections.
+- Mutual TLS (client certificates), SASL/GSSAPI (Kerberos) and generic SASL/OAUTHBEARER are not supported yet.
 - The message browser's "Load Recent" reads from the end of each partition using a throwaway consumer group, so it never affects real consumer group offsets, but very large messages or very high-throughput topics may take a moment to load.
 
 ## Release Notes
 
 See [CHANGELOG.md](CHANGELOG.md) for the full history.
+
+### 0.2.0
+
+- **New: Secured clusters** — TLS (system CAs, custom CA file, or unverified for dev), SASL/PLAIN, SASL/SCRAM-SHA-256/512 and Amazon MSK IAM. Add Cluster suggests settings from the port/host; change them later with **Edit Connection Security…**. Passwords live in VS Code's secret storage.
+- **Connection hints** — failures explain the likely cause and fix: wrong auth/TLS mode, untrusted certificate, Docker `advertised.listeners` or unpublished port, MSK VPC reachability, missing AWS credentials.
+- **Lost connections are detected** — the cluster moves to an error state with a Reconnect action instead of staying "connected".
+- **Fixes** — refused connections showing no reason, and hand edits to `kafka.clusters` needing a reload.
 
 ### 0.1.0
 
