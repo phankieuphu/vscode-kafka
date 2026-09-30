@@ -1,6 +1,7 @@
 import * as vscode from "vscode";
 import { GroupOverview } from "kafkajs";
 import { describeError, ClusterManager } from "../kafka/clusterManager";
+import { securityLabel } from "../kafka/connectionConfig";
 import {
   ClusterConfig,
   GroupOffsetEntry,
@@ -14,6 +15,7 @@ export class ClusterTreeItem extends vscode.TreeItem {
     readonly cluster: ClusterConfig,
     status: string,
     lastError?: string,
+    lastHint?: string,
   ) {
     super(cluster.name, vscode.TreeItemCollapsibleState.Collapsed);
     const brokerCount = `${cluster.brokers.length} broker${cluster.brokers.length === 1 ? "" : "s"}`;
@@ -28,8 +30,12 @@ export class ClusterTreeItem extends vscode.TreeItem {
     this.tooltip = new vscode.MarkdownString(
       `**${escapeMarkdown(cluster.name)}** — ${status}\n\n` +
         cluster.brokers.map((b) => `- \`${b}\``).join("\n") +
+        `\n\nSecurity: ${escapeMarkdown(securityLabel(cluster))}` +
         (status === "error" && lastError
           ? `\n\n${escapeMarkdown(lastError)}`
+          : "") +
+        (status === "error" && lastHint
+          ? `\n\n**Hint:** ${escapeMarkdown(lastHint)}`
           : ""),
     );
     this.contextValue = `kafkaCluster-${status}`;
@@ -243,6 +249,7 @@ export class KafkaTreeProvider implements vscode.TreeDataProvider<KafkaTreeNode>
                 cluster,
                 this.manager.getStatus(cluster.id),
                 this.manager.getLastError(cluster.id),
+                this.manager.getLastHint(cluster.id),
               ),
           );
       }

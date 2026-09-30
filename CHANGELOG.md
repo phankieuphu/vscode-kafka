@@ -6,6 +6,21 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-09-30
+
+### Added
+
+- Secured clusters: TLS (system CAs, a custom CA file, or unverified for dev), SASL/PLAIN, SASL/SCRAM-SHA-256/512 and Amazon MSK IAM. Add Cluster asks for the security settings and suggests one from the port/host; **Edit Connection Security…** changes them later
+- SASL passwords are stored in VS Code's secret storage, and asked for on connect when missing
+- Connection errors come with a hint about the likely cause: wrong auth or TLS mode, untrusted certificate, Docker `advertised.listeners`, container not running or port not published, MSK VPC reachability, missing AWS credentials
+- Reconnect action on clusters in the error state, and a notification with Reconnect when a connection is lost
+
+### Fixed
+
+- A lost broker connection wasn't detected; the cluster stayed "connected" while every operation failed
+- Refused connections showed as a bare "Connection error: " with no reason
+- Editing a cluster's brokers in `settings.json` had no effect until VS Code was reloaded
+
 ## [0.1.0] - 2026-09-27
 
 ### Added

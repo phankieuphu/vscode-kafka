@@ -1,5 +1,7 @@
 import * as vscode from "vscode";
 import { ClusterManager, describeError } from "./kafka/clusterManager";
+import { ClusterConfig } from "./kafka/types";
+import { promptForSecurity } from "./securityPrompt";
 import {
   ClusterTreeItem,
   GroupOffsetTreeItem,
@@ -15,9 +17,34 @@ import { DashboardPanel } from "./panels/dashboardPanel";
 import { parseBrokers, validateBrokers } from "./kafka/brokers";
 import { KafkaStatusBar } from "./statusBar";
 
+const EDIT_SECURITY = "Edit Connection Security";
+
 export function activate(context: vscode.ExtensionContext): void {
-  const manager = new ClusterManager();
+  const manager = new ClusterManager(context.secrets);
   const treeProvider = new KafkaTreeProvider(manager);
+
+  /** The error plus the likely cause/fix manager.connect() worked out, if any. */
+  const failureText = (cluster: ClusterConfig, error: unknown): string => {
+    const hint = manager.getLastHint(cluster.id);
+    return hint ? `${describeError(error)} — ${hint}` : describeError(error);
+  };
+
+  const showConnectFailure = async (
+    cluster: ClusterConfig,
+    error: unknown,
+    prefix: string,
+  ): Promise<void> => {
+    const choice = await vscode.window.showErrorMessage(
+      `${prefix}: ${failureText(cluster, error)}`,
+      EDIT_SECURITY,
+      "Show Output",
+    );
+    if (choice === EDIT_SECURITY) {
+      vscode.commands.executeCommand("kafka-manager.editClusterSecurity", { cluster });
+    } else if (choice === "Show Output") {
+      manager.showOutput();
+    }
+  };
 
   context.subscriptions.push(
     manager,
@@ -31,7 +58,7 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand("kafka-manager.addCluster", async () => {
       const existing = new Set(manager.getClusters().map((c) => c.name));
       const name = await vscode.window.showInputBox({
-        title: "Add Kafka Cluster (1/2)",
+        title: "Add Kafka Cluster (1/3)",
         prompt: "Name shown in the Clusters view",
         placeHolder: "Local",
         ignoreFocusOut: true,
@@ -47,7 +74,7 @@ export function activate(context: vscode.ExtensionContext): void {
       }
 
       const brokersInput = await vscode.window.showInputBox({
-        title: "Add Kafka Cluster (2/2)",
+        title: "Add Kafka Cluster (2/3)",
         prompt: "Bootstrap servers as host:port, comma-separated",
         placeHolder: "localhost:9092",
         ignoreFocusOut: true,
@@ -57,10 +84,13 @@ export function activate(context: vscode.ExtensionContext): void {
         return;
       }
 
-      const cluster = await manager.addCluster(
-        name.trim(),
-        parseBrokers(brokersInput),
-      );
+      const brokers = parseBrokers(brokersInput);
+      const security = await promptForSecurity(brokers, "Add Kafka Cluster (3/3)");
+      if (!security) {
+        return;
+      }
+
+      const cluster = await manager.addCluster(name.trim(), brokers, security);
       treeProvider.refresh();
       try {
         await vscode.window.withProgress(
@@ -71,15 +101,61 @@ export function activate(context: vscode.ExtensionContext): void {
           () => manager.connect(cluster),
         );
       } catch (error) {
-        const choice = await vscode.window.showWarningMessage(
-          `Saved "${cluster.name}", but couldn't connect: ${describeError(error)}`,
-          "Show Output",
+        await showConnectFailure(
+          cluster,
+          error,
+          `Saved "${cluster.name}", but couldn't connect`,
         );
-        if (choice === "Show Output") {
-          manager.showOutput();
-        }
       }
     }),
+
+    vscode.commands.registerCommand(
+      "kafka-manager.editClusterSecurity",
+      async (item: { cluster: ClusterConfig }) => {
+        // Re-read: the item may hold a stale copy.
+        const current = manager.getCluster(item.cluster.id);
+        if (!current) {
+          return;
+        }
+        const security = await promptForSecurity(
+          current.brokers,
+          `Connection Security — ${current.name}`,
+          current,
+        );
+        if (!security) {
+          return;
+        }
+        let updated: ClusterConfig | undefined;
+        try {
+          updated = await manager.updateClusterSecurity(current.id, security);
+        } catch (error) {
+          await showConnectFailure(
+            current,
+            error,
+            `Saved, but couldn't reconnect to "${current.name}"`,
+          );
+          return;
+        }
+        if (updated && manager.getStatus(updated.id) !== "connected") {
+          try {
+            await vscode.window.withProgress(
+              {
+                location: vscode.ProgressLocation.Notification,
+                title: `Connecting to "${updated.name}"…`,
+              },
+              () => manager.connect(updated!),
+            );
+          } catch (error) {
+            await showConnectFailure(
+              updated,
+              error,
+              `Saved, but couldn't connect to "${updated.name}"`,
+            );
+          }
+        }
+        treeProvider.refresh();
+      },
+    ),
 
     vscode.commands.registerCommand(
       "kafka-manager.updateClusterName",
@@ -131,8 +207,10 @@ export function activate(context: vscode.ExtensionContext): void {
         try {
           await manager.connect(item.cluster);
         } catch (error) {
-          vscode.window.showErrorMessage(
-            `Could not connect to "${item.cluster.name}": ${describeError(error)}`,
+          await showConnectFailure(
+            item.cluster,
+            error,
+            `Could not connect to "${item.cluster.name}"`,
           );
         }
       },
@@ -503,8 +581,10 @@ export function activate(context: vscode.ExtensionContext): void {
           try {
             await manager.connect(cluster);
           } catch (error) {
-            vscode.window.showErrorMessage(
-              `Failed to connect to "${cluster.name}": ${describeError(error)}`,
+            await showConnectFailure(
+              cluster,
+              error,
+              `Failed to connect to "${cluster.name}"`,
             );
             return;
           }
@@ -523,16 +603,19 @@ export function activate(context: vscode.ExtensionContext): void {
         try {
           await manager.reconnect(item.cluster);
         } catch (error) {
-          vscode.window.showErrorMessage(
-            `Could not reconnect to "${item.cluster.name}": ${describeError(error)}`,
+          await showConnectFailure(
+            item.cluster,
+            error,
+            `Could not reconnect to "${item.cluster.name}"`,
           );
         }
       },
     ),
 
     manager.onDidLoseConnection(async (cluster) => {
+      const hint = manager.getLastHint(cluster.id);
       const choice = await vscode.window.showWarningMessage(
-        `Lost connection to "${cluster.name}": ${manager.getLastError(cluster.id)}`,
+        `Lost connection to "${cluster.name}": ${manager.getLastError(cluster.id)}${hint ? ` — ${hint}` : ""}`,
         "Reconnect",
       );
       if (choice === "Reconnect") {

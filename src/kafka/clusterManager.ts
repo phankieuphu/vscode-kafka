@@ -14,11 +14,18 @@ import {
   KafkaJSRequestTimeoutError,
   KafkaJSBrokerNotFound,
 } from "kafkajs";
+import {
+  buildKafkaConfig,
+  connectionKey,
+  needsPassword,
+} from "./connectionConfig";
+import { explainConnectionError } from "./connectionHints";
 import { buildClusterOverview, RawGroup, RawWatermark } from "./dashboard";
 import { planReset } from "./offsets";
 import {
   ClusterConfig,
   ClusterOverview,
+  ClusterSecurity,
   ConnectionStatus,
   ConsumedMessage,
   GroupDetails,
@@ -34,6 +41,7 @@ import {
 
 const CONFIG_SECTION = "kafka";
 const CONFIG_CLUSTERS_KEY = "clusters";
+const PASSWORD_SECRET_PREFIX = "kafka-manager.password.";
 
 function toTopicInfo(metadata: ITopicMetadata): TopicInfo {
   const partitions: PartitionInfo[] = metadata.partitions
@@ -68,8 +76,12 @@ function decodeHeaders(headers: IHeaders | undefined): Record<string, string> {
 export class ClusterManager implements vscode.Disposable {
   private readonly statuses = new Map<string, ConnectionStatus>();
   private readonly kafkaInstances = new Map<string, Kafka>();
+  /** connectionKey() of the config each cached Kafka instance was built from. */
+  private readonly connectionKeys = new Map<string, string>();
   private readonly admins = new Map<string, Admin>();
   private readonly lastErrors = new Map<string, string>();
+  private readonly lastHints = new Map<string, string>();
+  private readonly configListener: vscode.Disposable;
   private readonly output = vscode.window.createOutputChannel("Kafka Manager");
 
   private readonly _onDidChangeStatus = new vscode.EventEmitter<string>();
@@ -83,6 +95,46 @@ export class ClusterManager implements vscode.Disposable {
   private readonly _onDidLoseConnection =
     new vscode.EventEmitter<ClusterConfig>();
   readonly onDidLoseConnection = this._onDidLoseConnection.event;
+
+  /** `secrets` holds SASL passwords; without it (tests) passwords can't be saved. */
+  constructor(private readonly secrets?: vscode.SecretStorage) {
+    this.configListener = vscode.workspace.onDidChangeConfiguration((e) => {
+      if (e.affectsConfiguration(`${CONFIG_SECTION}.${CONFIG_CLUSTERS_KEY}`)) {
+        void this.applyConfigChanges();
+      }
+    });
+  }
+
+  /** Hand edits to brokers/ssl/sasl in settings.json rebuild the client instead of silently keeping the old one. */
+  private async applyConfigChanges(): Promise<void> {
+    for (const [id, key] of [...this.connectionKeys]) {
+      const cluster = this.getCluster(id);
+      if (cluster && connectionKey(cluster) === key) {
+        continue;
+      }
+      const wasConnected = await this.dropClient(id);
+      if (cluster && wasConnected) {
+        this.log(`Connection settings for "${cluster.name}" changed; reconnecting.`);
+        this.connect(cluster).catch(() => undefined);
+      }
+    }
+  }
+
+  /** Forgets the cached client (and its producer/admin) so the next use rebuilds it from the current config. */
+  private async dropClient(id: string): Promise<boolean> {
+    const wasConnected = this.getStatus(id) === "connected";
+    this.kafkaInstances.delete(id);
+    this.connectionKeys.delete(id);
+    const producer = this.producers.get(id);
+    if (producer) {
+      this.producers.delete(id);
+      producer.then((p) => p.disconnect()).catch(() => undefined);
+    }
+    if (this.admins.has(id) || this.getStatus(id) !== "disconnected") {
+      await this.disconnect(id);
+    }
+    return wasConnected;
+  }
 
   getClusters(): ClusterConfig[] {
     return vscode.workspace
@@ -101,10 +153,89 @@ export class ClusterManager implements vscode.Disposable {
     this._onDidChangeClusters.fire();
   }
 
-  async addCluster(name: string, brokers: string[]): Promise<ClusterConfig> {
-    const cluster: ClusterConfig = { id: crypto.randomUUID(), name, brokers };
+  async addCluster(
+    name: string,
+    brokers: string[],
+    security: ClusterSecurity = {},
+  ): Promise<ClusterConfig> {
+    const cluster: ClusterConfig = {
+      id: crypto.randomUUID(),
+      name,
+      brokers,
+      ...(security.ssl !== undefined && security.ssl !== false ? { ssl: security.ssl } : {}),
+      ...(security.sasl ? { sasl: security.sasl } : {}),
+    };
+    await this.storePassword(cluster, security.password);
     await this.saveClusters([...this.getClusters(), cluster]);
     return cluster;
+  }
+
+  /** Replaces TLS/SASL settings (and optionally the password), reconnecting if the cluster was connected. */
+  async updateClusterSecurity(
+    id: string,
+    security: ClusterSecurity,
+  ): Promise<ClusterConfig | undefined> {
+    const clusters = this.getClusters();
+    const current = clusters.find((c) => c.id === id);
+    if (!current) {
+      return undefined;
+    }
+    const updated: ClusterConfig = { id, name: current.name, brokers: current.brokers };
+    if (security.ssl !== undefined && security.ssl !== false) {
+      updated.ssl = security.ssl;
+    }
+    if (security.sasl) {
+      updated.sasl = security.sasl;
+    }
+    await this.storePassword(updated, security.password);
+    // Drop the client before saving so the config listener doesn't reconnect a second time.
+    const wasConnected = await this.dropClient(id);
+    await this.saveClusters(clusters.map((c) => (c.id === id ? updated : c)));
+    if (wasConnected) {
+      await this.connect(updated);
+    }
+    return updated;
+  }
+
+  private async storePassword(cluster: ClusterConfig, password: string | undefined): Promise<void> {
+    if (!this.secrets) {
+      return;
+    }
+    const key = PASSWORD_SECRET_PREFIX + cluster.id;
+    if (!needsPassword(cluster.sasl)) {
+      await this.secrets.delete(key);
+    } else if (password !== undefined) {
+      await this.secrets.store(key, password);
+    }
+  }
+
+  /**
+   * The stored SASL password. When there is none (hand-edited settings, or a
+   * synced config on a new machine) and `interactive`, asks for it and saves it.
+   */
+  private async resolvePassword(
+    cluster: ClusterConfig,
+    interactive: boolean,
+  ): Promise<string | undefined> {
+    const sasl = cluster.sasl;
+    if (!sasl || sasl.mechanism === "aws-iam") {
+      return undefined;
+    }
+    const stored = await this.secrets?.get(PASSWORD_SECRET_PREFIX + cluster.id);
+    if (stored !== undefined || !interactive) {
+      return stored;
+    }
+    const password = await vscode.window.showInputBox({
+      title: `Connect to "${cluster.name}"`,
+      prompt: `Password for ${sasl.username} (saved in VS Code's secret storage)`,
+      password: true,
+      ignoreFocusOut: true,
+    });
+    if (password === undefined) {
+      throw new Error(`A password for "${sasl.username}" is needed to connect to "${cluster.name}".`);
+    }
+    await this.storePassword(cluster, password);
+    return password;
   }
 
   async updateClusterName(
@@ -122,14 +253,32 @@ export class ClusterManager implements vscode.Disposable {
   }
 
   async removeCluster(id: string): Promise<void> {
-    await this.disconnect(id);
-    this.kafkaInstances.delete(id);
+    await this.dropClient(id);
     this.statuses.delete(id);
+    this.lastErrors.delete(id);
+    this.lastHints.delete(id);
+    await this.secrets?.delete(PASSWORD_SECRET_PREFIX + id);
     await this.saveClusters(this.getClusters().filter((c) => c.id !== id));
   }
 
   getLastError(id: string): string | undefined {
     return this.lastErrors.get(id);
+  }
+
+  /** Likely cause and fix for the last connection failure, when one can be guessed. */
+  getLastHint(id: string): string | undefined {
+    return this.lastHints.get(id);
+  }
+
+  private recordFailure(cluster: ClusterConfig, error: unknown, what: string): void {
+    const hint = explainConnectionError(cluster, error);
+    this.log(`${what} "${cluster.name}": ${describeError(error)}${hint ? `\n  Hint: ${hint}` : ""}`);
+    this.lastErrors.set(cluster.id, describeError(error));
+    if (hint) {
+      this.lastHints.set(cluster.id, hint);
+    } else {
+      this.lastHints.delete(cluster.id);
+    }
   }
 
   getStatus(id: string): ConnectionStatus {
@@ -141,16 +290,17 @@ export class ClusterManager implements vscode.Disposable {
     this._onDidChangeStatus.fire(id);
   }
 
-  private getKafka(cluster: ClusterConfig): Kafka {
-    let kafka = this.kafkaInstances.get(cluster.id);
-    if (!kafka) {
-      kafka = new Kafka({
-        clientId: "vscode-kafka",
-        brokers: cluster.brokers,
-        requestTimeout: 10_000,
-      });
-      this.kafkaInstances.set(cluster.id, kafka);
+  private async getKafka(cluster: ClusterConfig, interactive = false): Promise<Kafka> {
+    const key = connectionKey(cluster);
+    const cached = this.kafkaInstances.get(cluster.id);
+    // Instances injected without a key (tests) are always reused.
+    if (cached && (this.connectionKeys.get(cluster.id) ?? key) === key) {
+      return cached;
     }
+    const password = await this.resolvePassword(cluster, interactive);
+    const kafka = new Kafka(buildKafkaConfig(cluster, password));
+    this.kafkaInstances.set(cluster.id, kafka);
+    this.connectionKeys.set(cluster.id, key);
     return kafka;
   }
 
@@ -159,22 +309,21 @@ export class ClusterManager implements vscode.Disposable {
       return;
     }
     this.setStatus(cluster.id, "connecting");
-    const admin = this.getKafka(cluster).admin({
-      retry: { retries: 2, initialRetryTime: 300, maxRetryTime: 2_000 },
-    });
+    let admin: Admin | undefined;
     try {
+      admin = (await this.getKafka(cluster, true)).admin({
+        retry: { retries: 2, initialRetryTime: 300, maxRetryTime: 2_000 },
+      });
       await admin.connect();
       // Cheap round-trip to confirm the brokers actually respond.
       await admin.listTopics();
       this.admins.set(cluster.id, this.guardAdmin(cluster, admin));
       this.lastErrors.delete(cluster.id);
+      this.lastHints.delete(cluster.id);
       this.setStatus(cluster.id, "connected");
     } catch (error) {
-      await admin.disconnect().catch(() => undefined);
-      this.log(
-        `Failed to connect to "${cluster.name}": ${describeError(error)}`,
-      );
-      this.lastErrors.set(cluster.id, describeError(error));
+      await admin?.disconnect().catch(() => undefined);
+      this.recordFailure(cluster, error, "Failed to connect to");
       this.setStatus(cluster.id, "error");
       throw error;
     }
@@ -362,7 +511,7 @@ export class ClusterManager implements vscode.Disposable {
     topic: string,
     fromBeginning: boolean,
   ): Promise<void> {
-    const consumer = this.getKafka(cluster).consumer({ groupId });
+    const consumer = (await this.getKafka(cluster)).consumer({ groupId });
     try {
       await consumer.connect();
       await consumer.subscribe({ topic, fromBeginning });
@@ -572,8 +721,11 @@ export class ClusterManager implements vscode.Disposable {
   private getProducer(cluster: ClusterConfig): Promise<Producer> {
     let p = this.producers.get(cluster.id);
     if (!p) {
-      const producer = this.getKafka(cluster).producer();
-      p = producer.connect().then(() => producer);
+      p = this.getKafka(cluster).then(async (kafka) => {
+        const producer = kafka.producer();
+        await producer.connect();
+        return producer;
+      });
       p.catch(() => this.producers.delete(cluster.id));
       this.producers.set(cluster.id, p);
     }
@@ -617,7 +769,7 @@ export class ClusterManager implements vscode.Disposable {
     onMessage: (message: ConsumedMessage) => void,
     onError: (error: unknown) => void,
   ): Promise<{ stop: () => Promise<void> }> {
-    const consumer = this.getKafka(cluster).consumer({
+    const consumer = (await this.getKafka(cluster)).consumer({
       groupId: `vscode-kafka-tail-${crypto.randomUUID()}`,
     });
     await consumer.connect();
@@ -678,7 +830,7 @@ export class ClusterManager implements vscode.Disposable {
       return [];
     }
 
-    const consumer = this.getKafka(cluster).consumer({
+    const consumer = (await this.getKafka(cluster)).consumer({
       groupId: `vscode-kafka-history-${crypto.randomUUID()}`,
     });
     const collected: ConsumedMessage[] = [];
@@ -752,6 +904,7 @@ export class ClusterManager implements vscode.Disposable {
     for (const admin of this.admins.values()) {
       admin.disconnect().catch(() => undefined);
     }
+    this.configListener.dispose();
     this.output.dispose();
     this._onDidChangeStatus.dispose();
     this._onDidChangeClusters.dispose();
@@ -787,9 +940,8 @@ export class ClusterManager implements vscode.Disposable {
       return;
     }
     this.admins.delete(cluster.id);
-    this.log(`Lost connection to "${cluster.name}": ${describeError(error)}`);
+    this.recordFailure(cluster, error, "Lost connection to");
     admin.disconnect().catch(() => undefined);
-    this.lastErrors.set(cluster.id, describeError(error));
     this.setStatus(cluster.id, "error");
     // notify on subscribers
     this._onDidLoseConnection.fire(cluster);
@@ -803,9 +955,28 @@ export class ClusterManager implements vscode.Disposable {
 
 export function describeError(error: unknown): string {
   if (error instanceof Error) {
+    // Node reports dual-stack ECONNREFUSED as an AggregateError with an empty
+    // message, which leaves KafkaJS saying just "Connection error: ".
+    if (/:\s*$/.test(error.message)) {
+      const code = errorCode(error);
+      if (code) {
+        return `${error.message.trimEnd()} ${code}`;
+      }
+    }
     return error.message;
   }
   return String(error);
+}
+
+function errorCode(error: unknown): string | undefined {
+  for (let e = error, depth = 0; e instanceof Error && depth < 5; depth++) {
+    const { code, cause } = e as Error & { code?: unknown; cause?: unknown };
+    if (typeof code === "string") {
+      return code;
+    }
+    e = cause;
+  }
+  return undefined;
 }
 
 export function isConnectionError(error: unknown): boolean {
