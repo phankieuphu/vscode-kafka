@@ -6,6 +6,8 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-10-12
+
 ### Added
 
 - Browse messages from the oldest offset, a specific offset or a point in time, on all partitions or one, and page with **Load older** / **Load newer** (#19)
@@ -27,6 +29,7 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 - Topic and group panels now follow their cluster: disconnecting stops a live tail and shows a disconnected banner with Connect, removing the cluster closes them, and renames update them. A topic deleted while its panel is open gives a clear error instead of a `TypeError` (#13)
 - Consumer lag was overstated for partitions with no committed offset (counted from offset 0 instead of the oldest retained message) and could be negative after a topic was truncated; one shared calculation is now used by the tree, group panel, dashboard and reset preview (#14)
 - Producing disconnected the shared producer after every message
+- Create Topic could report "This server does not host this topic-partition" although the topic had been created, when the broker didn't yet know about it
 
 ## [0.2.0] - 2026-09-30
 

@@ -104,6 +104,15 @@ When a connection fails, the error includes a hint about the likely cause. Commo
 
 See [CHANGELOG.md](CHANGELOG.md) for the full history.
 
+### 0.3.0
+
+- **Browse anywhere in a topic** — start from the newest or oldest message, an offset or a point in time; page older/newer; search a topic's keys, values and headers.
+- **Schema Registry** — Avro, Protobuf and JSON Schema values are decoded (with schema id and subject), format pickers for keys and values, and produce can encode with a subject's schema.
+- **Produce** — templates with `{{uuid}}`/`{{now}}`/`{{seq}}` variables, send ×N, send a batch from a JSON/NDJSON file; export messages; copy as a kcat command.
+- **Topics** — edit settings inline, reset to default, add partitions, set retention and cleanup policy on create.
+- **Lag alerts**, **broker details**, a read-only **ACL list**, mutual TLS, and clusters shared through workspace settings.
+- **Fixes** — the message browser and tail no longer leave consumer groups behind; lag no longer overstated or negative; panels follow disconnect/remove/rename and a disconnect stops the live tail; hand edits to settings apply immediately; Create Topic no longer fails right after creating the topic.
+
 ### 0.2.0
 
 - **New: Secured clusters** — TLS (system CAs, custom CA file, or unverified for dev), SASL/PLAIN, SASL/SCRAM-SHA-256/512 and Amazon MSK IAM. Add Cluster suggests settings from the port/host; change them later with **Edit Connection Security…**. Passwords live in VS Code's secret storage.
