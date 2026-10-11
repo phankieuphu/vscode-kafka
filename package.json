@@ -18,6 +18,15 @@
   ],
   "activationEvents": [],
   "main": "./dist/extension.js",
+  "capabilities": {
+    "untrustedWorkspaces": {
+      "supported": "limited",
+      "description": "Clusters defined in workspace settings are ignored until you trust the workspace, since they can point the extension at arbitrary brokers and certificate files.",
+      "restrictedConfigurations": [
+        "kafka.clusters"
+      ]
+    }
+  },
   "contributes": {
     "configuration": {
       "title": "Kafka Manager",
@@ -25,7 +34,7 @@
         "kafka.clusters": {
           "type": "array",
           "default": [],
-          "description": "Configured Kafka clusters. Managed via the 'Kafka: Add Cluster' command; edit by hand if you need to.",
+          "description": "Configured Kafka clusters. Managed via the 'Kafka: Add Cluster' command; edit by hand if you need to. Clusters can live in user settings or, to share them with a team, in workspace settings (.vscode/settings.json). Passwords are never stored here.",
           "items": {
             "type": "object",
             "required": [
@@ -65,6 +74,14 @@
                         "type": "boolean",
                         "default": true,
                         "description": "Set to false to accept self-signed certificates (dev clusters only)."
+                      },
+                      "certFile": {
+                        "type": "string",
+                        "description": "Path to a PEM client certificate for mutual TLS (e.g. Aiven). Requires keyFile."
+                      },
+                      "keyFile": {
+                        "type": "string",
+                        "description": "Path to the PEM private key for certFile (unencrypted)."
                       }
                     }
                   }
@@ -106,9 +123,62 @@
                     "description": "For aws-iam: AWS profile to use; the default credential chain when omitted."
                   }
                 }
+              },
+              "schemaRegistry": {
+                "type": "object",
+                "description": "Confluent-compatible Schema Registry used to decode Avro, Protobuf and JSON Schema messages. The password is kept in VS Code's secret storage.",
+                "required": [
+                  "url"
+                ],
+                "additionalProperties": false,
+                "properties": {
+                  "url": {
+                    "type": "string",
+                    "description": "e.g. http://localhost:8081"
+                  },
+                  "username": {
+                    "type": "string",
+                    "description": "Basic-auth user; for Confluent Cloud, the Schema Registry API key."
+                  }
+                }
               }
             }
           }
+        },
+        "kafka.lagAlerts": {
+          "type": "array",
+          "default": [],
+          "markdownDescription": "Consumer groups to watch. While the cluster is connected, a warning appears when a group's total lag goes above `threshold` messages. Use **Watch Lag…** on a consumer group to add one.",
+          "items": {
+            "type": "object",
+            "required": [
+              "cluster",
+              "group",
+              "threshold"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "cluster": {
+                "type": "string",
+                "description": "Cluster id or name."
+              },
+              "group": {
+                "type": "string",
+                "description": "Consumer group id."
+              },
+              "threshold": {
+                "type": "integer",
+                "minimum": 0,
+                "description": "Alert when total lag is above this many messages."
+              }
+            }
+          }
+        },
+        "kafka.lagAlertIntervalSeconds": {
+          "type": "integer",
+          "default": 60,
+          "minimum": 10,
+          "description": "How often watched consumer groups' lag is checked, in seconds."
         }
       }
     },
@@ -185,17 +255,17 @@
         },
         {
           "command": "kafka-manager.viewConsumerGroup",
-          "when": "view == kafkaExplorer && viewItem == kafkaGroup",
+          "when": "view == kafkaExplorer && viewItem =~ /^kafkaGroup(-watched)?$/",
           "group": "inline@1"
         },
         {
           "command": "kafka-manager.resetGroupOffsets",
-          "when": "view == kafkaExplorer && viewItem == kafkaGroup",
+          "when": "view == kafkaExplorer && viewItem =~ /^kafkaGroup(-watched)?$/",
           "group": "1_modification"
         },
         {
           "command": "kafka-manager.deleteConsumerGroup",
-          "when": "view == kafkaExplorer && viewItem == kafkaGroup",
+          "when": "view == kafkaExplorer && viewItem =~ /^kafkaGroup(-watched)?$/",
           "group": "1_modification"
         },
         {
@@ -252,6 +322,31 @@
           "command": "kafka-manager.disconnectCluster",
           "when": "view == kafkaExplorer && viewItem =~ /^kafkaCluster-(connected|connecting|error)$/",
           "group": "0_connection@2"
+        },
+        {
+          "command": "kafka-manager.watchGroupLag",
+          "when": "view == kafkaExplorer && viewItem =~ /^kafkaGroup(-watched)?$/",
+          "group": "2_watch@1"
+        },
+        {
+          "command": "kafka-manager.unwatchGroupLag",
+          "when": "view == kafkaExplorer && viewItem == kafkaGroup-watched",
+          "group": "2_watch@2"
+        },
+        {
+          "command": "kafka-manager.configureSchemaRegistry",
+          "when": "view == kafkaExplorer && viewItem =~ /^kafkaCluster-/",
+          "group": "1_actions@5"
+        },
+        {
+          "command": "kafka-manager.viewAcls",
+          "when": "view == kafkaExplorer && viewItem == kafkaCluster-connected",
+          "group": "1_actions@6"
+        },
+        {
+          "command": "kafka-manager.viewBroker",
+          "when": "view == kafkaExplorer && viewItem == kafkaBroker",
+          "group": "inline@1"
         }
       ],
       "commandPalette": [
@@ -317,6 +412,26 @@
         },
         {
           "command": "kafka-manager.editClusterSecurity",
+          "when": "false"
+        },
+        {
+          "command": "kafka-manager.viewBroker",
+          "when": "false"
+        },
+        {
+          "command": "kafka-manager.viewAcls",
+          "when": "false"
+        },
+        {
+          "command": "kafka-manager.watchGroupLag",
+          "when": "false"
+        },
+        {
+          "command": "kafka-manager.unwatchGroupLag",
+          "when": "false"
+        },
+        {
+          "command": "kafka-manager.configureSchemaRegistry",
           "when": "false"
         }
       ]
@@ -418,12 +533,35 @@
         "command": "kafka-manager.editClusterSecurity",
         "title": "Kafka: Edit Connection Security…",
         "icon": "$(lock)"
+      },
+      {
+        "command": "kafka-manager.viewBroker",
+        "title": "Kafka: Show Broker Details",
+        "icon": "$(info)"
+      },
+      {
+        "command": "kafka-manager.viewAcls",
+        "title": "Kafka: Show ACLs"
+      },
+      {
+        "command": "kafka-manager.watchGroupLag",
+        "title": "Kafka: Watch Lag…",
+        "icon": "$(bell)"
+      },
+      {
+        "command": "kafka-manager.unwatchGroupLag",
+        "title": "Kafka: Stop Watching Lag",
+        "icon": "$(bell-slash)"
+      },
+      {
+        "command": "kafka-manager.configureSchemaRegistry",
+        "title": "Kafka: Configure Schema Registry…"
       }
     ],
     "viewsWelcome": [
       {
         "view": "kafkaExplorer",
-        "contents": "No Kafka clusters yet. Add a cluster by entering its bootstrap servers, e.g. `localhost:9092`.\n[Add Cluster](command:kafka-manager.addCluster)\nSupports plaintext, TLS, SASL/PLAIN, SASL/SCRAM and Amazon MSK IAM. Clusters are stored in the [kafka.clusters](command:workbench.action.openSettings?%5B%22kafka.clusters%22%5D) setting; passwords go to VS Code's secret storage."
+        "contents": "No Kafka clusters yet. Add a cluster by entering its bootstrap servers, e.g. `localhost:9092`.\n[Add Cluster](command:kafka-manager.addCluster)\nSupports plaintext, TLS (including client certificates), SASL/PLAIN, SASL/SCRAM and Amazon MSK IAM. Clusters are stored in the [kafka.clusters](command:workbench.action.openSettings?%5B%22kafka.clusters%22%5D) setting, in user or workspace settings; passwords go to VS Code's secret storage."
       }
     ]
   },
@@ -436,7 +574,8 @@
     "watch-tests": "tsc -p . -w --outDir out",
     "pretest": "npm run compile-tests && npm run compile && npm run lint",
     "lint": "eslint src",
-    "test": "vscode-test"
+    "test": "vscode-test",
+    "test:integration": "vscode-test --label integration"
   },
   "devDependencies": {
     "@types/mocha": "^10.0.9",
@@ -453,6 +592,7 @@
     "webpack-cli": "^5.1.4"
   },
   "dependencies": {
+    "@kafkajs/confluent-schema-registry": "^4.1.0",
     "aws-msk-iam-sasl-signer-js": "^1.0.3",
     "kafkajs": "^2.2.4"
   }

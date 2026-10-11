@@ -3,6 +3,12 @@ import { describeError, ClusterManager } from "../kafka/clusterManager";
 import { planReset } from "../kafka/offsets";
 import { ClusterConfig, GroupOffsetEntry, ResetSpec } from "../kafka/types";
 import {
+  disconnectedBannerCss,
+  disconnectedBannerHtml,
+  disconnectedBannerScript,
+  watchCluster,
+} from "./clusterWatch";
+import {
   baseCss,
   contentSecurityPolicy,
   createNonce,
@@ -14,6 +20,8 @@ import {
 
 type WebviewInMessage =
   | { command: "refresh" }
+  | { command: "connect" }
+  | { command: "watchLag" }
   | { command: "preview"; topic: string; spec: ResetSpec }
   | { command: "reset"; topic: string; spec: ResetSpec }
   | { command: "editOffset"; topic: string; partition: number }
@@ -27,6 +35,7 @@ export class GroupPanel {
   private static readonly panels = new Map<string, GroupPanel>();
 
   private readonly panel: vscode.WebviewPanel;
+  private readonly subscriptions: vscode.Disposable[] = [];
   private disposed = false;
   private offsets: GroupOffsetEntry[] = [];
 
@@ -57,18 +66,34 @@ export class GroupPanel {
   private constructor(
     panel: vscode.WebviewPanel,
     private readonly manager: ClusterManager,
-    private readonly cluster: ClusterConfig,
+    private cluster: ClusterConfig,
     private readonly groupId: string,
     private readonly key: string,
   ) {
     this.panel = panel;
     this.panel.webview.html = this.render();
 
-    this.panel.webview.onDidReceiveMessage((message: WebviewInMessage) =>
-      this.handleMessage(message),
+    this.subscriptions.push(
+      this.panel.webview.onDidReceiveMessage((message: WebviewInMessage) =>
+        this.handleMessage(message),
+      ),
+      this.panel.onDidDispose(() => this.dispose()),
+      watchCluster(manager, cluster.id, {
+        onStatus: (status) => {
+          this.postConnection();
+          if (status === "connected") {
+            void this.load();
+          }
+        },
+        onRemoved: () => this.panel.dispose(),
+        onChanged: (updated) => {
+          this.cluster = updated;
+          this.postConnection();
+        },
+      }),
     );
-    this.panel.onDidDispose(() => this.dispose());
 
+    this.postConnection();
     this.load();
   }
 
@@ -76,6 +101,19 @@ export class GroupPanel {
     switch (message.command) {
       case "refresh":
         await this.load();
+        break;
+      case "connect":
+        try {
+          await this.manager.connect(this.cluster);
+        } catch (error) {
+          this.post({ command: "status", text: `Couldn't connect: ${describeError(error)}`, error: true });
+        }
+        break;
+      case "watchLag":
+        await vscode.commands.executeCommand("kafka-manager.watchGroupLag", {
+          cluster: this.cluster,
+          group: { groupId: this.groupId },
+        });
         break;
       case "preview":
         this.postPreview(message.topic, message.spec);
@@ -92,7 +130,18 @@ export class GroupPanel {
     }
   }
 
+  private postConnection(): void {
+    this.post({
+      command: "connection",
+      status: this.manager.getStatus(this.cluster.id),
+      clusterName: this.cluster.name,
+    });
+  }
+
   private async load(): Promise<void> {
+    if (this.manager.getStatus(this.cluster.id) !== "connected") {
+      return;
+    }
     this.post({ command: "loading", value: true });
     try {
       const [details, offsets] = await Promise.all([
@@ -244,6 +293,9 @@ export class GroupPanel {
   private dispose(): void {
     this.disposed = true;
     GroupPanel.panels.delete(this.key);
+    for (const subscription of this.subscriptions) {
+      subscription.dispose();
+    }
   }
 
   private render(): string {
@@ -255,6 +307,7 @@ export class GroupPanel {
 <meta http-equiv="Content-Security-Policy" content="${contentSecurityPolicy(nonce)}" />
 <style>
 ${baseCss}
+${disconnectedBannerCss}
   body { padding: 0; }
   .layout { display: flex; min-height: 100vh; }
   .main { flex-grow: 1; min-width: 0; padding: 0 20px 24px; }
@@ -274,6 +327,7 @@ ${baseCss}
 </style>
 </head>
 <body>
+${disconnectedBannerHtml()}
 <div class="layout">
   <div class="main">
     <header class="page">
@@ -281,8 +335,9 @@ ${baseCss}
         <div class="title"><h1>${escapeHtml(this.groupId)}</h1><span class="chip" id="stateChip"><span class="dot"></span>…</span></div>
         <div class="sub" id="meta">${escapeHtml(this.cluster.name)}</div>
       </div>
-      <div class="toolbar">
+      <div class="toolbar" data-needs-connection>
         <button class="secondary" id="refreshBtn">${icons.refresh}Refresh</button>
+        <button class="secondary" id="watchBtn" title="Get a notification when this group's lag passes a threshold">Watch Lag…</button>
         <button id="resetOpenBtn" aria-expanded="false" aria-controls="resetPanel">Reset Offsets…</button>
         <button class="danger" id="deleteBtn">Delete Group</button>
       </div>
@@ -344,7 +399,8 @@ ${baseCss}
   <script nonce="${nonce}">
     const vscode = acquireVsCodeApi();
 ${sharedScript}
-    const state = { details: null, offsets: [], at: '', lagTopic: '' };
+${disconnectedBannerScript}
+    const state = { details: null, offsets: [], at: '', lagTopic: '', clusterName: ${scriptValue(this.cluster.name)} };
     const GROUP_STATE = { Stable: 'good', Empty: 'idle', PreparingRebalance: 'warn', CompletingRebalance: 'warn', Dead: 'crit' };
     const GROUP_LABEL = { PreparingRebalance: 'Rebalancing', CompletingRebalance: 'Rebalancing' };
 
@@ -366,7 +422,7 @@ ${sharedScript}
       const d = state.details;
       const level = GROUP_STATE[d.state] || 'warn';
       $('stateChip').innerHTML = dot(level) + esc(GROUP_LABEL[d.state] || d.state);
-      $('meta').textContent = [${scriptValue(this.cluster.name)}, d.protocol && 'protocol ' + d.protocol, d.protocolType, 'updated ' + state.at].filter(Boolean).join(' · ');
+      $('meta').textContent = [state.clusterName, d.protocol && 'protocol ' + d.protocol, d.protocolType, 'updated ' + state.at].filter(Boolean).join(' · ');
 
       let total = 0n, max = null;
       for (const o of state.offsets) {
@@ -484,6 +540,7 @@ ${sharedScript}
 
     $('refreshBtn').addEventListener('click', () => vscode.postMessage({ command: 'refresh' }));
     $('deleteBtn').addEventListener('click', () => vscode.postMessage({ command: 'deleteGroup' }));
+    $('watchBtn').addEventListener('click', () => vscode.postMessage({ command: 'watchLag' }));
     $('resetOpenBtn').addEventListener('click', () => openReset($('resetPanel').hidden));
     $('resetCloseBtn').addEventListener('click', () => openReset(false));
     $('resetCancelBtn').addEventListener('click', () => openReset(false));
@@ -507,6 +564,11 @@ ${sharedScript}
     window.addEventListener('message', (event) => {
       const message = event.data;
       switch (message.command) {
+        case 'connection':
+          state.clusterName = message.clusterName;
+          renderConnection(message.status, message.clusterName);
+          if (state.details) render();
+          break;
         case 'data':
           state.details = message.details;
           state.offsets = message.offsets;

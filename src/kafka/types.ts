@@ -15,6 +15,10 @@ export interface ClusterSsl {
   caFile?: string;
   /** Set to false to accept self-signed/untrusted certificates (dev clusters only). */
   rejectUnauthorized?: boolean;
+  /** PEM client certificate for mutual TLS (e.g. Aiven); used together with `keyFile`. */
+  certFile?: string;
+  /** PEM private key for `certFile`. Must not be passphrase-protected. */
+  keyFile?: string;
 }
 
 export interface ClusterConfig {
@@ -24,7 +28,18 @@ export interface ClusterConfig {
   /** TLS to the brokers: `true` for system CAs, an object for a custom CA or no verification. */
   ssl?: boolean | ClusterSsl;
   sasl?: ClusterSasl;
+  /** Confluent-compatible Schema Registry used to decode Avro/Protobuf/JSON Schema payloads. */
+  schemaRegistry?: ClusterSchemaRegistry;
 }
+
+export interface ClusterSchemaRegistry {
+  url: string;
+  /** Basic-auth user (Confluent Cloud: the Schema Registry API key). The password lives in SecretStorage. */
+  username?: string;
+}
+
+/** Which settings file a cluster was read from. Workspace clusters can be committed and shared. */
+export type ClusterSource = "user" | "workspace";
 
 /** Connection security chosen in the Add Cluster / Edit Connection Security flows. */
 export interface ClusterSecurity {
@@ -57,6 +72,23 @@ export interface GroupOffsetEntry {
   lag: string;
 }
 
+export type MessageFormat =
+  | "auto"
+  | "string"
+  | "json"
+  | "avro"
+  | "protobuf"
+  | "json-schema"
+  | "hex"
+  | "base64";
+
+export interface SchemaInfo {
+  id: number;
+  type: "AVRO" | "PROTOBUF" | "JSON" | "UNKNOWN";
+  /** "subject vN", when the registry can map the id back to a subject. */
+  subject?: string;
+}
+
 export interface ConsumedMessage {
   partition: number;
   offset: string;
@@ -64,6 +96,45 @@ export interface ConsumedMessage {
   value: string | null;
   timestamp: string;
   headers: Record<string, string>;
+  /** Raw value size in bytes. */
+  size?: number;
+  /** How key/value were turned into text, e.g. "utf-8", "avro", "base64". */
+  keyEncoding?: string;
+  valueEncoding?: string;
+  keySchema?: SchemaInfo;
+  valueSchema?: SchemaInfo;
+  /** Why the requested format couldn't be applied. */
+  decodeError?: string;
+}
+
+/** Where a browse starts on each partition. `before`/`after` page from offsets already loaded. */
+export type StartPosition =
+  | { kind: "newest" }
+  | { kind: "oldest" }
+  | { kind: "offset"; offset: string }
+  | { kind: "timestamp"; timestamp: number }
+  | { kind: "before"; offsets: Record<number, string> }
+  | { kind: "after"; offsets: Record<number, string> };
+
+export interface BrowseRequest {
+  position: StartPosition;
+  /** Messages per partition (or matches in total, when searching). */
+  limit: number;
+  /** Only this partition; all when omitted. */
+  partition?: number;
+  /** Keep only messages whose key, value or headers contain this text. */
+  search?: string;
+  /** With `search`: how many offsets per partition to scan at most. */
+  scanLimit?: number;
+  format?: { key: MessageFormat; value: MessageFormat };
+}
+
+export interface BrowseResult {
+  messages: ConsumedMessage[];
+  /** Messages read, including those the search filtered out. */
+  scanned: number;
+  /** True when stopped early by cancellation, the match limit, or the time limit. */
+  truncated: boolean;
 }
 
 export interface GroupMemberAssignment {
@@ -84,6 +155,31 @@ export interface GroupDetails {
   protocol: string;
   protocolType: string;
   members: GroupMemberInfo[];
+}
+
+export interface BrokerConfigEntry {
+  name: string;
+  value: string | null;
+  isDefault: boolean;
+  readOnly: boolean;
+  isSensitive: boolean;
+  /** e.g. "static", "dynamic", "default". */
+  source: string;
+}
+
+export interface BrokerDetails extends BrokerSummary {
+  rack?: string;
+  config: BrokerConfigEntry[];
+}
+
+export interface AclEntry {
+  resourceType: string;
+  resourceName: string;
+  patternType: string;
+  principal: string;
+  host: string;
+  operation: string;
+  permission: string;
 }
 
 export interface BrokerSummary {
@@ -154,6 +250,8 @@ export interface TopicConfigEntry {
   isDefault: boolean;
   readOnly: boolean;
   isSensitive: boolean;
+  /** Set on the topic itself, as opposed to inherited from the broker or a default. */
+  isTopicOverride: boolean;
 }
 
 export interface ProduceOptions {
@@ -161,6 +259,26 @@ export interface ProduceOptions {
   value: string;
   partition?: number;
   headers?: Record<string, string>;
+  /** Encode the value (parsed as JSON) with the latest schema of this Schema Registry subject. */
+  valueSubject?: string;
+}
+
+/** A saved produce form. Key, value and header values may contain {{variables}}. */
+export interface ProduceTemplate {
+  name: string;
+  key: string;
+  value: string;
+  headers: Record<string, string>;
+  partition: number | null;
+  valueSubject?: string;
+}
+
+export interface LagAlert {
+  /** Cluster id or name. */
+  cluster: string;
+  group: string;
+  /** Total lag (messages) that triggers the alert. */
+  threshold: number;
 }
 
 export type ResetSpec =

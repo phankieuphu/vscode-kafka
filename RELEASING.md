@@ -4,13 +4,14 @@ This extension is published to the Visual Studio Marketplace by GitHub Actions (
 
 ## How the pipeline works
 
-| Event | `test` | `package` | `publish` |
-| --- | --- | --- | --- |
-| Pull request to `master` | ✅ | ✅ | — |
-| Push to `master` | ✅ | ✅ | — |
-| Push of a `v*` tag (e.g. `v0.0.5`) | ✅ | ✅ | ✅ |
+| Event | `test` | `integration` | `package` | `publish` |
+| --- | --- | --- | --- | --- |
+| Pull request to `master` | ✅ | ✅ | ✅ | — |
+| Push to `master` | ✅ | ✅ | ✅ | — |
+| Push of a `v*` tag (e.g. `v0.0.5`) | ✅ | ✅ | ✅ | ✅ |
 
-- `test` runs lint, compile and the test suite on Linux, Windows and macOS.
+- `test` runs lint, compile and the unit test suite on Linux, Windows and macOS.
+- `integration` runs `ClusterManager` against a real single-node Kafka (an `apache/kafka` service container) on Linux. To run it locally, start a broker and run `KAFKA_BROKERS=localhost:9092 npm run test:integration`.
 - `package` builds the `.vsix` and uploads it as the `vsix` workflow artifact.
 - `publish` runs `vsce publish`, which publishes the version in `package.json`. The tag itself is only the trigger, so **the tag and `package.json` version must match**.
 
@@ -90,7 +91,7 @@ git push origin v0.0.5
 gh run watch
 ```
 
-All three jobs should succeed. The new version appears on the Marketplace within a few minutes.
+All four jobs should succeed. The new version appears on the Marketplace within a few minutes.
 
 ### 5. Create the GitHub Release (optional)
 

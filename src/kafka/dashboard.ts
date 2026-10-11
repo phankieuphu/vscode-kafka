@@ -1,3 +1,4 @@
+import { partitionLag } from "./lag";
 import {
   BrokerSummary,
   ClusterOverview,
@@ -99,12 +100,8 @@ export function buildClusterOverview(raw: RawClusterSnapshot): ClusterOverview {
         topicNames.push(topic);
         const marks = raw.watermarks.get(topic) ?? [];
         for (const p of partitions) {
-          const high = BigInt(marks.find((m) => m.partition === p.partition)?.high ?? "0");
-          // Matches ClusterManager.fetchGroupOffsets: no commit means the whole partition is lag.
-          const partitionLag = p.offset === "-1" ? high : high - BigInt(p.offset);
-          if (partitionLag > 0n) {
-            lag += partitionLag;
-          }
+          const mark = marks.find((m) => m.partition === p.partition);
+          lag += partitionLag(p.offset, mark?.low ?? "0", mark?.high ?? "0");
         }
       }
       clusterLag += lag;

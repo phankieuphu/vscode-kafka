@@ -45,6 +45,9 @@ export function securityLabel(cluster: Pick<ClusterConfig, "ssl" | "sasl">): str
           ? "TLS (custom CA)"
           : "TLS",
     );
+    if (ssl.certFile) {
+      parts.push("client certificate");
+    }
   }
   return parts.length > 0 ? parts.join(" · ") : "Plaintext";
 }
@@ -60,21 +63,32 @@ function buildSsl(cluster: ClusterConfig): ConnectionOptions | boolean | undefin
     return undefined;
   }
   const options = typeof cluster.ssl === "object" ? cluster.ssl : {};
-  if (!options.caFile && options.rejectUnauthorized !== false) {
+  if (!options.caFile && !options.certFile && options.rejectUnauthorized !== false) {
     return true;
   }
   const ssl: ConnectionOptions = {
     rejectUnauthorized: options.rejectUnauthorized ?? true,
   };
-  if (options.caFile) {
-    const file = expandHome(options.caFile);
+  const read = (file: string, what: string): string => {
     try {
-      ssl.ca = [fs.readFileSync(file, "utf8")];
+      return fs.readFileSync(expandHome(file), "utf8");
     } catch (error) {
       throw new Error(
-        `Can't read the CA file "${options.caFile}" for "${cluster.name}": ${error instanceof Error ? error.message : String(error)}`,
+        `Can't read the ${what} "${file}" for "${cluster.name}": ${error instanceof Error ? error.message : String(error)}`,
       );
     }
+  };
+  if (options.caFile) {
+    ssl.ca = [read(options.caFile, "CA file")];
+  }
+  if (options.certFile || options.keyFile) {
+    if (!options.certFile || !options.keyFile) {
+      throw new Error(
+        `"${cluster.name}" needs both ssl.certFile and ssl.keyFile for a client certificate.`,
+      );
+    }
+    ssl.cert = read(options.certFile, "client certificate");
+    ssl.key = read(options.keyFile, "client key");
   }
   return ssl;
 }

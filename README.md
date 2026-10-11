@@ -7,11 +7,14 @@ Manage Apache Kafka clusters directly from VS Code: connect to one or more clust
 ## Features
 
 - **Cluster dashboard** — click the dashboard icon on a connected cluster (or run **Kafka: Open Cluster Dashboard**, or click the Kafka item in the status bar) for a one-page health view: an issues banner with links to the affected topics and groups, broker/topic/partition/group counts, under-replicated and offline partitions, total consumer lag, per-broker leader distribution, and sortable, filterable topic and consumer-group tables. Optional auto-refresh every 10/30/60 seconds; if refreshes keep failing, the last good data stays on screen, marked stale.
-- **Cluster explorer** — a "Kafka" activity bar view lists your configured clusters with their connection state. Topics show a green/yellow/red health dot with details on hover. The cluster context menu can open the dashboard, create a topic, copy the bootstrap servers, rename or remove the cluster.
+- **Cluster explorer** — a "Kafka" activity bar view lists your configured clusters with their connection state. Topics show a green/yellow/red health dot with details on hover. The cluster context menu can open the dashboard, create a topic, copy the bootstrap servers, set a Schema Registry, show ACLs, rename or remove the cluster.
 - **Guided setup** — a welcome view on first run, and a two-step **Add Cluster** input that checks every broker is `host:port` and connects right away.
-- **Topic panel** — click a topic for three tabs. **Messages**: load the newest messages per partition or live-tail new ones (with pause), filter by partition or search key/value, and inspect a message's key, headers and pretty-printed JSON. **Partitions**: leader, replicas, ISR, health and offsets per partition. **Configuration**: overridden settings, with defaults on request.
-- **Produce** — send a message with an optional key, target partition and headers; JSON values are checked as you type (Ctrl/Cmd+Enter sends).
-- **Consumer group panel** — state, members with their assigned partitions, and lag per partition. **Reset Offsets…** moves a topic to earliest, latest, a timestamp, or shifts by N, with a preview of partitions changed and messages skipped or replayed; it's blocked while the group has active members.
+- **Topic panel** — click a topic for three tabs. **Messages**: read from the newest or oldest offset, a specific offset or a point in time, on all partitions or one; page with **Load older** / **Load newer**; or live-tail new ones (with pause). Filter what's loaded, or **Search topic** to scan up to 100k messages per partition for text in the key, value or headers (with progress and Cancel). Inspect a message's key, headers, pretty-printed JSON, schema and size; copy it, load it into the produce form, or **copy as a kcat command**. **Export…** saves what's shown as JSON or NDJSON. **Partitions**: leader, replicas, ISR, health and offsets per partition, and **Add partitions…**. **Configuration**: edit settings inline (with a confirmation diff before saving) or reset them to the default.
+- **Schema Registry decoding** — set a Schema Registry on a cluster (**Configure Schema Registry…**) and Avro, Protobuf and JSON Schema payloads in the Confluent wire format are decoded automatically, showing the schema id and subject. Key and value format pickers also offer String, JSON, Hex and Base64. Produce can encode a JSON value with a subject's latest schema.
+- **Produce** — send a message with an optional key, target partition and headers; JSON values are checked as you type (Ctrl/Cmd+Enter sends). Use `{{uuid}}`, `{{now}}`, `{{nowMs}}`, `{{random.int}}` and `{{seq}}` in the key, value and headers; send ×N with an optional delay for quick load tests; save the form as a **template** per topic. **From file…** sends every record of a JSON array or NDJSON file (exports can be replayed as-is) with a progress bar.
+- **Lag alerts** — **Watch Lag…** on a consumer group (or in its panel) sets a threshold. While the cluster is connected its lag is checked in the background (`kafka.lagAlertIntervalSeconds`); you get one notification when it crosses the threshold and a status bar warning until it recovers.
+- **Brokers and ACLs** — the **Brokers** node lists each broker with its leader/replica counts; click one (or a broker row on the dashboard) for its settings and their source. **ACLs** shows a read-only list filterable by principal, resource and type.
+- **Consumer group panel** — state, members with their assigned partitions, and lag per partition (counting only retained messages when nothing is committed, and never negative). **Reset Offsets…** moves a topic to earliest, latest, a timestamp, or shifts by N, with a preview of partitions changed and messages skipped or replayed; it's blocked while the group has active members.
 - **Topic management** — create and delete topics from the tree's context menu.
 
 ## Screenshots
@@ -59,6 +62,7 @@ Network access to your Kafka broker(s). No local Kafka installation is required 
 | Amazon MSK, port 9096 | SASL/SCRAM-SHA-512, TLS |
 | Amazon MSK, port 9098 | AWS IAM (uses your AWS credential chain or a named profile; run `aws sso login` first if you use SSO) |
 | Confluent Cloud | SASL/PLAIN, TLS — the API key is the username, the secret the password |
+| Aiven (client certificate auth) | No authentication, TLS, CA file `ca.pem`, client certificate `service.cert` + key `service.key` |
 
 Change these later with **Edit Connection Security…** on the cluster's context menu. Passwords are kept in VS Code's secret storage, never in `settings.json`; if a cluster has SASL configured but no saved password (for example after Settings Sync to a new machine) you're asked for it on connect.
 
@@ -68,9 +72,13 @@ When a connection fails, the error includes a hint about the likely cause. Commo
 - **Docker: connection refused on localhost.** The container isn't running or the port isn't published (`-p 9092:9092`). From inside a dev container, use `host.docker.internal` instead of `localhost`.
 - **Amazon MSK: timeout or host not found.** MSK brokers are private to their VPC by default. Connect over VPN or an SSH tunnel, or enable public access (ports 9194/9196/9198) and allow your IP in the security group.
 
+## Sharing clusters with a team
+
+**Add Cluster** asks whether to save the cluster in your **user** settings or the **workspace** settings (`.vscode/settings.json`), which you can commit so everyone who opens the repository gets the same cluster list. The cluster's tooltip shows where it's saved. Passwords are never written to either file: each person is asked for theirs on first connect, and it's kept in their own secret storage. Workspace clusters are only used once you trust the workspace.
+
 ## Extension Settings
 
-* `kafka.clusters`: array of `{ id, name, brokers, ssl?, sasl? }` entries. Normally managed via the **Kafka: Add Cluster** / **Edit Connection Security…** / **Remove Cluster** commands, but can be hand-edited in `settings.json` — changes to brokers or security take effect immediately (a connected cluster reconnects). Example:
+* `kafka.clusters`: array of `{ id, name, brokers, ssl?, sasl?, schemaRegistry? }` entries, in user or workspace settings. Normally managed via the **Kafka: Add Cluster** / **Edit Connection Security…** / **Configure Schema Registry…** / **Remove Cluster** commands, but can be hand-edited in `settings.json` — changes take effect immediately: the tree updates, a connected cluster reconnects when its brokers or security change, and open panels follow renames and close when their cluster is removed. Example:
 
   ```json
   {
@@ -81,12 +89,16 @@ When a connection fails, the error includes a hint about the likely cause. Commo
   }
   ```
 
-  `ssl` is `true`, or `{ "caFile": "~/certs/ca.pem" }`, or `{ "rejectUnauthorized": false }`. `sasl.mechanism` is one of `plain`, `scram-sha-256`, `scram-sha-512` (with `username`) or `aws-iam` (with `region` and optional `profile`).
+  `ssl` is `true`, or an object with any of `caFile` (private CA), `certFile` + `keyFile` (client certificate for mutual TLS; the key must not be passphrase-protected) and `rejectUnauthorized: false` (dev only). `sasl.mechanism` is one of `plain`, `scram-sha-256`, `scram-sha-512` (with `username`) or `aws-iam` (with `region` and optional `profile`). `schemaRegistry` is `{ "url": "http://localhost:8081", "username"?: "…" }`.
+* `kafka.lagAlerts`: array of `{ cluster, group, threshold }` (cluster id or name). Managed with **Watch Lag…** / **Stop Watching Lag** on a consumer group.
+* `kafka.lagAlertIntervalSeconds`: how often watched groups are checked (default 60, minimum 10).
 
 ## Known Issues
 
-- Mutual TLS (client certificates), SASL/GSSAPI (Kerberos) and generic SASL/OAUTHBEARER are not supported yet.
-- The message browser's "Load Recent" reads from the end of each partition using a throwaway consumer group, so it never affects real consumer group offsets, but very large messages or very high-throughput topics may take a moment to load.
+- SASL/GSSAPI (Kerberos), generic SASL/OAUTHBEARER and passphrase-protected client keys are not supported yet.
+- The message browser and live tail read through a short-lived consumer group that never commits offsets and is deleted afterwards, so real consumer groups are never affected. These `vscode-kafka-*` groups are hidden from the tree and dashboard, including any left by versions before 0.3.0.
+- Broker log directory sizes aren't shown: KafkaJS has no DescribeLogDirs API.
+- Resetting offsets takes a few seconds per topic, because KafkaJS commits them through a short-lived consumer.
 
 ## Release Notes
 

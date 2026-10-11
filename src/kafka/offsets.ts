@@ -1,3 +1,4 @@
+import { partitionLag } from "./lag";
 import { GroupOffsetEntry, OffsetMove } from "./types";
 
 export type PlannableSpec =
@@ -29,7 +30,7 @@ export function planReset(
     const low = BigInt(entry.low);
     const high = BigInt(entry.high);
     const committed = entry.offset === "-1" ? null : BigInt(entry.offset);
-    lagBefore += committed === null ? high : high - committed;
+    lagBefore += partitionLag(entry.offset, entry.low, entry.high);
 
     const target =
       spec.mode === "shift"
