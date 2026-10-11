@@ -42,8 +42,42 @@ jobs:
         if: runner.os != 'Linux'
         run: npx vscode-test
 
+  integration:
+    # ClusterManager against a real single-node Kafka (KRaft). Linux only:
+    # service containers aren't available on the Windows/macOS runners.
+    runs-on: ubuntu-latest
+    services:
+      kafka:
+        image: apache/kafka:3.9.0
+        ports:
+          - 9092:9092
+        options: >-
+          --health-cmd "/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:9092"
+          --health-interval 5s
+          --health-timeout 10s
+          --health-retries 20
+    env:
+      KAFKA_BROKERS: localhost:9092
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 20.x
+          cache: npm
+
+      - name: Install dependencies
+        # Only tsc and vscode-test run here; no package needs its install scripts.
+        run: npm ci --ignore-scripts
+
+      - name: Compile tests
+        run: npm run compile-tests
+
+      - name: Run integration tests (headless via xvfb)
+        run: xvfb-run -a npx vscode-test --label integration
+
   package:
-    needs: test
+    needs: [test, integration]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7

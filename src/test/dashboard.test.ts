@@ -66,10 +66,10 @@ suite('buildClusterOverview', () => {
 		assert.deepStrictEqual(brokers[1], { nodeId: 2, host: 'b2', port: 9092, isController: false, leaderCount: 1, replicaCount: 3 });
 	});
 
-	test('sums group lag, treating an uncommitted partition as fully lagging', () => {
+	test('sums group lag, counting everything retained on an uncommitted partition', () => {
 		const { groups, totals } = buildClusterOverview(snapshot());
 
-		// partition 0: 110 - 100 = 10; partition 1: no commit -> high (50).
+		// partition 0: 110 - 100 = 10; partition 1: no commit -> high - low (50 - 0).
 		assert.strictEqual(groups[0].totalLag, '60');
 		assert.deepStrictEqual(groups[0].topics, ['orders']);
 		assert.strictEqual(totals.totalLag, '60');

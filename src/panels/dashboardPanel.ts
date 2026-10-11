@@ -2,6 +2,8 @@ import * as vscode from "vscode";
 import { describeError, ClusterManager } from "../kafka/clusterManager";
 import { listIssues } from "../kafka/dashboard";
 import { ClusterConfig } from "../kafka/types";
+import { BrokerPanel } from "./brokerPanel";
+import { watchCluster } from "./clusterWatch";
 import { GroupPanel } from "./groupPanel";
 import { TopicPanel } from "./topicPanel";
 import { baseCss, contentSecurityPolicy, createNonce, escapeHtml, icons, scriptValue, sharedScript } from "./webview";
@@ -11,7 +13,8 @@ type WebviewInMessage =
   | { command: "connect" }
   | { command: "showOutput" }
   | { command: "openTopic"; topic: string }
-  | { command: "openGroup"; groupId: string };
+  | { command: "openGroup"; groupId: string }
+  | { command: "openBroker"; nodeId: number };
 
 export interface HealthReport {
   clusterId: string;
@@ -54,7 +57,7 @@ export class DashboardPanel {
   private constructor(
     panel: vscode.WebviewPanel,
     private readonly manager: ClusterManager,
-    private readonly cluster: ClusterConfig
+    private cluster: ClusterConfig
   ) {
     this.panel = panel;
     this.panel.webview.html = this.render();
@@ -62,13 +65,19 @@ export class DashboardPanel {
     this.subscriptions.push(
       this.panel.webview.onDidReceiveMessage((message: WebviewInMessage) => this.handleMessage(message)),
       this.panel.onDidDispose(() => this.dispose()),
-      this.manager.onDidChangeStatus((id) => {
-        if (id === this.cluster.id) {
+      watchCluster(manager, cluster.id, {
+        onStatus: (status) => {
           this.postConnection();
-          if (this.manager.getStatus(id) === "connected") {
+          if (status === "connected") {
             this.load();
           }
-        }
+        },
+        onRemoved: () => this.panel.dispose(),
+        onChanged: (updated) => {
+          this.cluster = updated;
+          this.panel.title = `Dashboard: ${updated.name}`;
+          this.postConnection();
+        },
       })
     );
 
@@ -96,6 +105,9 @@ export class DashboardPanel {
         break;
       case "openGroup":
         GroupPanel.createOrShow(this.manager, this.cluster, message.groupId);
+        break;
+      case "openBroker":
+        BrokerPanel.createOrShow(this.manager, this.cluster, message.nodeId);
         break;
     }
   }
@@ -126,6 +138,8 @@ export class DashboardPanel {
       command: "connection",
       status: this.manager.getStatus(this.cluster.id),
       error: this.manager.getLastError(this.cluster.id) ?? null,
+      name: this.cluster.name,
+      brokers: this.cluster.brokers.join(", "),
     });
   }
 
@@ -162,8 +176,8 @@ ${baseCss}
 <body>
   <header class="page">
     <div>
-      <div class="title"><h1>${name}</h1><span class="chip" id="connChip"><span class="dot"></span><span>…</span></span></div>
-      <div class="sub">${escapeHtml(this.cluster.brokers.join(", "))}<span id="clusterMeta"></span></div>
+      <div class="title"><h1 id="clusterName">${name}</h1><span class="chip" id="connChip"><span class="dot"></span><span>…</span></span></div>
+      <div class="sub"><span id="clusterBrokers">${escapeHtml(this.cluster.brokers.join(", "))}</span><span id="clusterMeta"></span></div>
     </div>
     <div class="toolbar" id="actions">
       <label class="inline" for="autoRefresh">Auto-refresh</label>
@@ -201,7 +215,7 @@ ${baseCss}
   <div id="failure" class="alert error" role="alert" hidden style="margin-bottom:14px">
     ${icons.error}
     <div class="body">
-      <strong>Couldn’t refresh ${name}</strong>
+      <strong>Couldn’t refresh <span id="failureName">${name}</span></strong>
       <span class="mono" id="failureText"></span>
     </div>
     <div class="toolbar">
@@ -246,6 +260,7 @@ ${baseCss}
 ${sharedScript}
     const saved = vscode.getState() || {};
     const state = {
+      name: ${scriptValue(this.cluster.name)},
       overview: null,
       issues: [],
       updatedAt: '',
@@ -269,8 +284,10 @@ ${sharedScript}
       disconnected: ['idle', 'Disconnected'],
     };
 
-    function renderConnection(status, error) {
+    function renderConnection(status, error, name, brokers) {
       state.connection = status;
+      if (name) { state.name = name; $('clusterName').textContent = name; $('failureName').textContent = name; }
+      if (brokers) $('clusterBrokers').textContent = brokers;
       const [level, text] = CONN[status] || CONN.disconnected;
       $('connChip').innerHTML = dot(level) + '<span>' + esc(text) + '</span>';
       $('actions').hidden = status !== 'connected';
@@ -280,9 +297,9 @@ ${sharedScript}
         $('content').hidden = true;
         $('skeleton').hidden = true;
         $('failure').hidden = true;
-        $('discTitle').textContent = status === 'error' ? ${scriptValue(this.cluster.name)} + ' couldn’t connect'
-          : status === 'connecting' ? 'Connecting to ' + ${scriptValue(this.cluster.name)} + '…'
-          : ${scriptValue(this.cluster.name)} + ' is disconnected';
+        $('discTitle').textContent = status === 'error' ? state.name + ' couldn’t connect'
+          : status === 'connecting' ? 'Connecting to ' + state.name + '…'
+          : state.name + ' is disconnected';
         $('discText').textContent = status === 'error' && error ? error
           : 'Connect to load broker health, topics and consumer lag. Nothing is fetched until you do.';
         $('connectBtn').disabled = status === 'connecting';
@@ -339,7 +356,7 @@ ${sharedScript}
       if (!o.brokers.length) { $('brokersBody').innerHTML = '<div class="empty">No brokers reported.</div>'; return; }
       const maxLeaders = BigInt(Math.max(0, ...o.brokers.map((b) => b.leaderCount)));
       const cols = [{ label: 'ID' }, { label: 'Host' }, { label: 'Role' }, { label: 'Leaders', num: true }, { label: 'Leader share' }, { label: 'Replicas', num: true }];
-      const rows = o.brokers.map((b) => '<tr>' +
+      const rows = o.brokers.map((b) => '<tr class="link" tabindex="0" data-broker="' + b.nodeId + '" title="Show broker settings">' +
         '<td>' + b.nodeId + '</td>' +
         '<td class="mono">' + esc(b.host + ':' + b.port) + '</td>' +
         '<td>' + (b.isController ? '<span class="chip">Controller</span>' : '<span class="muted">Broker</span>') + '</td>' +
@@ -465,6 +482,7 @@ ${sharedScript}
       if (!tr) return;
       if (tr.dataset.topic != null) vscode.postMessage({ command: 'openTopic', topic: tr.dataset.topic });
       else if (tr.dataset.group != null) vscode.postMessage({ command: 'openGroup', groupId: tr.dataset.group });
+      else if (tr.dataset.broker != null) vscode.postMessage({ command: 'openBroker', nodeId: Number(tr.dataset.broker) });
     }
 
     function sortBy(th) {
@@ -525,7 +543,7 @@ ${sharedScript}
       const message = event.data;
       switch (message.command) {
         case 'connection':
-          renderConnection(message.status, message.error);
+          renderConnection(message.status, message.error, message.name, message.brokers);
           renderAll();
           break;
         case 'loading':

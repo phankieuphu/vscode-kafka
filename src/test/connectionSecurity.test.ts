@@ -63,6 +63,27 @@ suite('buildKafkaConfig', () => {
 		}
 	});
 
+	test('client certificates are read for mutual TLS and need both files', () => {
+		const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'kafka-mtls-'));
+		const [caFile, certFile, keyFile] = ['ca.pem', 'service.cert', 'service.key'].map((f) => path.join(dir, f));
+		fs.writeFileSync(caFile, 'CA');
+		fs.writeFileSync(certFile, 'CERT');
+		fs.writeFileSync(keyFile, 'KEY');
+		try {
+			assert.deepStrictEqual(buildKafkaConfig({ ...base, ssl: { caFile, certFile, keyFile } }).ssl, {
+				rejectUnauthorized: true, ca: ['CA'], cert: 'CERT', key: 'KEY',
+			});
+			assert.deepStrictEqual(buildKafkaConfig({ ...base, ssl: { certFile, keyFile } }).ssl, {
+				rejectUnauthorized: true, cert: 'CERT', key: 'KEY',
+			});
+			assert.throws(() => buildKafkaConfig({ ...base, ssl: { certFile } }), /needs both ssl.certFile and ssl.keyFile/);
+			assert.throws(() => buildKafkaConfig({ ...base, ssl: { certFile, keyFile: path.join(dir, 'missing.key') } }), /Can't read the client key/);
+			assert.strictEqual(securityLabel({ ssl: { caFile, certFile, keyFile } }), 'TLS (custom CA) · client certificate');
+		} finally {
+			fs.rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
 	test('connectionKey ignores the name but not security', () => {
 		assert.strictEqual(connectionKey(base), connectionKey({ ...base, name: 'Renamed' }));
 		assert.notStrictEqual(connectionKey(base), connectionKey({ ...base, ssl: true }));

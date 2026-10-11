@@ -2,8 +2,11 @@ import * as vscode from "vscode";
 import { GroupOverview } from "kafkajs";
 import { describeError, ClusterManager } from "../kafka/clusterManager";
 import { securityLabel } from "../kafka/connectionConfig";
+import { findLagAlert } from "../lagMonitor";
 import {
+  BrokerSummary,
   ClusterConfig,
+  ClusterSource,
   GroupOffsetEntry,
   PartitionInfo,
   TopicInfo,
@@ -16,6 +19,7 @@ export class ClusterTreeItem extends vscode.TreeItem {
     status: string,
     lastError?: string,
     lastHint?: string,
+    source: ClusterSource = "user",
   ) {
     super(cluster.name, vscode.TreeItemCollapsibleState.Collapsed);
     const brokerCount = `${cluster.brokers.length} broker${cluster.brokers.length === 1 ? "" : "s"}`;
@@ -31,6 +35,8 @@ export class ClusterTreeItem extends vscode.TreeItem {
       `**${escapeMarkdown(cluster.name)}** — ${status}\n\n` +
         cluster.brokers.map((b) => `- \`${b}\``).join("\n") +
         `\n\nSecurity: ${escapeMarkdown(securityLabel(cluster))}` +
+        (cluster.schemaRegistry ? `\n\nSchema Registry: \`${cluster.schemaRegistry.url}\`` : "") +
+        `\n\nSaved in: ${source === "workspace" ? "workspace settings (shared with anyone who opens this workspace)" : "user settings"}` +
         (status === "error" && lastError
           ? `\n\n${escapeMarkdown(lastError)}`
           : "") +
@@ -88,6 +94,48 @@ export class GroupsFolderTreeItem extends vscode.TreeItem {
     super("Consumer Groups", vscode.TreeItemCollapsibleState.Collapsed);
     this.contextValue = "kafkaGroupsFolder";
     this.iconPath = new vscode.ThemeIcon("folder");
+  }
+}
+
+export class BrokersFolderTreeItem extends vscode.TreeItem {
+  readonly kind = "brokersFolder" as const;
+  constructor(readonly cluster: ClusterConfig) {
+    super("Brokers", vscode.TreeItemCollapsibleState.Collapsed);
+    this.contextValue = "kafkaBrokersFolder";
+    this.iconPath = new vscode.ThemeIcon("server-environment");
+  }
+}
+
+export class BrokerTreeItem extends vscode.TreeItem {
+  readonly kind = "broker" as const;
+  constructor(
+    readonly cluster: ClusterConfig,
+    readonly broker: BrokerSummary & { rack?: string },
+  ) {
+    super(`Broker ${broker.nodeId}`, vscode.TreeItemCollapsibleState.None);
+    this.description = `${broker.host}:${broker.port}${broker.isController ? " · controller" : ""}`;
+    this.tooltip = `${broker.leaderCount} leader partition(s), ${broker.replicaCount} replica(s)${broker.rack ? `, rack ${broker.rack}` : ""}`;
+    this.contextValue = "kafkaBroker";
+    this.iconPath = new vscode.ThemeIcon(broker.isController ? "star-full" : "server");
+    this.command = {
+      command: "kafka-manager.viewBroker",
+      title: "Show Broker Details",
+      arguments: [this],
+    };
+  }
+}
+
+export class AclsTreeItem extends vscode.TreeItem {
+  readonly kind = "acls" as const;
+  constructor(readonly cluster: ClusterConfig) {
+    super("ACLs", vscode.TreeItemCollapsibleState.None);
+    this.contextValue = "kafkaAcls";
+    this.iconPath = new vscode.ThemeIcon("shield");
+    this.command = {
+      command: "kafka-manager.viewAcls",
+      title: "Show ACLs",
+      arguments: [this],
+    };
   }
 }
 
@@ -167,8 +215,12 @@ export class GroupTreeItem extends vscode.TreeItem {
     readonly group: GroupOverview,
   ) {
     super(group.groupId, vscode.TreeItemCollapsibleState.Collapsed);
-    this.contextValue = "kafkaGroup";
-    this.iconPath = new vscode.ThemeIcon("organization");
+    const alert = findLagAlert(cluster, group.groupId);
+    this.contextValue = alert ? "kafkaGroup-watched" : "kafkaGroup";
+    this.iconPath = new vscode.ThemeIcon(alert ? "bell" : "organization");
+    if (alert) {
+      this.description = `alert above ${alert.threshold.toLocaleString()}`;
+    }
     this.command = {
       command: "kafka-manager.viewConsumerGroup",
       title: "View Group Details",
@@ -213,6 +265,9 @@ export type KafkaTreeNode =
   | ClusterTreeItem
   | TopicsFolderTreeItem
   | GroupsFolderTreeItem
+  | BrokersFolderTreeItem
+  | BrokerTreeItem
+  | AclsTreeItem
   | TopicTreeItem
   | PartitionTreeItem
   | GroupTreeItem
@@ -228,6 +283,11 @@ export class KafkaTreeProvider implements vscode.TreeDataProvider<KafkaTreeNode>
   constructor(private readonly manager: ClusterManager) {
     manager.onDidChangeStatus(() => this.refresh());
     manager.onDidChangeClusters(() => this.refresh());
+    vscode.workspace.onDidChangeConfiguration((e) => {
+      if (e.affectsConfiguration("kafka.lagAlerts")) {
+        this.refresh();
+      }
+    });
   }
 
   refresh(): void {
@@ -250,6 +310,7 @@ export class KafkaTreeProvider implements vscode.TreeDataProvider<KafkaTreeNode>
                 this.manager.getStatus(cluster.id),
                 this.manager.getLastError(cluster.id),
                 this.manager.getLastHint(cluster.id),
+                this.manager.getClusterSource(cluster.id),
               ),
           );
       }
@@ -259,7 +320,14 @@ export class KafkaTreeProvider implements vscode.TreeDataProvider<KafkaTreeNode>
           return [
             new TopicsFolderTreeItem(element.cluster),
             new GroupsFolderTreeItem(element.cluster),
+            new BrokersFolderTreeItem(element.cluster),
+            new AclsTreeItem(element.cluster),
           ];
+
+        case "brokersFolder": {
+          const brokers = await this.manager.listBrokers(element.cluster);
+          return brokers.map((b) => new BrokerTreeItem(element.cluster, b));
+        }
 
         case "topicsFolder": {
           const topics = await this.manager.listTopics(element.cluster);

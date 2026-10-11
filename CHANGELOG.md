@@ -6,6 +6,28 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 
 ## [Unreleased]
 
+### Added
+
+- Browse messages from the oldest offset, a specific offset or a point in time, on all partitions or one, and page with **Load older** / **Load newer** (#19)
+- **Search topic**: scan up to 100k messages per partition for text in the key, value or headers, with progress and Cancel (#19)
+- Schema Registry support: decode Avro, Protobuf and JSON Schema values in the Confluent wire format, show the schema id and subject, pick a key/value format (Auto, String, JSON, Avro, Protobuf, JSON Schema, Hex, Base64), and encode a JSON value with a subject's latest schema when producing (#18)
+- Export the messages shown as JSON or NDJSON, produce a batch from a JSON array or NDJSON file with progress, and copy a message as a kcat command (#20)
+- Edit topic settings inline with a confirmation diff, reset a setting to its default, add partitions, and set `cleanup.policy` / `retention.ms` when creating a topic (#21)
+- Save clusters to workspace settings to share them with a team; the tooltip shows where each cluster is saved. Workspace clusters are ignored until the workspace is trusted (#22)
+- Produce templates per topic, `{{uuid}}`, `{{now}}`, `{{nowMs}}`, `{{random.int}}` and `{{seq}}` variables, and send ×N with a delay (#23)
+- Lag alerts: **Watch Lag…** on a consumer group, checked in the background while connected, with one notification per crossing and a status bar warning until it recovers (`kafka.lagAlerts`, `kafka.lagAlertIntervalSeconds`) (#24)
+- Brokers node and broker details (role, leader/replica counts, settings and their source), and a read-only, filterable ACL list (#25)
+- Mutual TLS with a client certificate and key (e.g. Aiven) (#17)
+- Integration tests for `ClusterManager` against a real Kafka broker, run in CI on Linux (#26)
+
+### Fixed
+
+- The message browser and live tail left a consumer group behind on the cluster for every load, which then showed up with false "has lag but no members" warnings. They no longer commit offsets, delete their group afterwards, and `vscode-kafka-*` groups are hidden (#11)
+- Hand edits to `kafka.clusters` now refresh the tree and status bar straight away, and removing a cluster by hand disconnects it (#12)
+- Topic and group panels now follow their cluster: disconnecting stops a live tail and shows a disconnected banner with Connect, removing the cluster closes them, and renames update them. A topic deleted while its panel is open gives a clear error instead of a `TypeError` (#13)
+- Consumer lag was overstated for partitions with no committed offset (counted from offset 0 instead of the oldest retained message) and could be negative after a topic was truncated; one shared calculation is now used by the tree, group panel, dashboard and reset preview (#14)
+- Producing disconnected the shared producer after every message
+
 ## [0.2.0] - 2026-09-30
 
 ### Added

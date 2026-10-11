@@ -150,22 +150,54 @@ async function promptForTls(
   if (!verify) {
     return undefined;
   }
-  if (verify.mode === "system") {
-    return true;
-  }
+  const ssl: ClusterSsl = {};
   if (verify.mode === "insecure") {
-    return { rejectUnauthorized: false };
+    ssl.rejectUnauthorized = false;
+  } else if (verify.mode === "ca") {
+    const caFile = await pickPem("CA certificate (PEM)", existing.caFile);
+    if (!caFile) {
+      return undefined;
+    }
+    ssl.caFile = caFile;
   }
-  const files = await vscode.window.showOpenDialog({
-    title: "CA certificate (PEM)",
-    canSelectMany: false,
-    filters: { Certificates: ["pem", "crt", "cer"], "All files": ["*"] },
-    defaultUri: existing.caFile ? vscode.Uri.file(existing.caFile) : undefined,
-  });
-  if (!files || files.length === 0) {
+
+  const clientCert = await vscode.window.showQuickPick(
+    [
+      { label: "No client certificate", detail: "The broker doesn't ask for one (most clusters, and all SASL ones)", use: false },
+      { label: "Use a client certificate…", detail: existing.certFile ?? "Mutual TLS — e.g. Aiven's service.cert and service.key", use: true },
+    ].sort((a, b) => Number(b.use === !!existing.certFile) - Number(a.use === !!existing.certFile)),
+    { title, placeHolder: "Does the broker require a client certificate (mutual TLS)?", ignoreFocusOut: true },
+  );
+  if (!clientCert) {
     return undefined;
   }
-  return { caFile: files[0].fsPath };
+  if (clientCert.use) {
+    const certFile = await pickPem("Client certificate (PEM)", existing.certFile);
+    if (!certFile) {
+      return undefined;
+    }
+    const keyFile = await pickPem("Client private key (PEM, unencrypted)", existing.keyFile, ["pem", "key"]);
+    if (!keyFile) {
+      return undefined;
+    }
+    ssl.certFile = certFile;
+    ssl.keyFile = keyFile;
+  }
+  return Object.keys(ssl).length > 0 ? ssl : true;
+}
+
+async function pickPem(
+  title: string,
+  current: string | undefined,
+  extensions = ["pem", "crt", "cer"],
+): Promise<string | undefined> {
+  const files = await vscode.window.showOpenDialog({
+    title,
+    canSelectMany: false,
+    filters: { Certificates: extensions, "All files": ["*"] },
+    defaultUri: current ? vscode.Uri.file(current) : undefined,
+  });
+  return files?.[0]?.fsPath;
 }
 
 async function promptForAwsIam(

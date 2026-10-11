@@ -1,8 +1,11 @@
 import * as vscode from "vscode";
 import { ClusterManager, describeError } from "./kafka/clusterManager";
-import { ClusterConfig } from "./kafka/types";
+import { ClusterConfig, ClusterSource } from "./kafka/types";
+import { findLagAlert, LagMonitor, setLagAlert } from "./lagMonitor";
 import { promptForSecurity } from "./securityPrompt";
 import {
+  AclsTreeItem,
+  BrokerTreeItem,
   ClusterTreeItem,
   GroupOffsetTreeItem,
   GroupsFolderTreeItem,
@@ -14,6 +17,8 @@ import {
 import { TopicPanel } from "./panels/topicPanel";
 import { GroupPanel } from "./panels/groupPanel";
 import { DashboardPanel } from "./panels/dashboardPanel";
+import { BrokerPanel } from "./panels/brokerPanel";
+import { AclPanel } from "./panels/aclPanel";
 import { parseBrokers, validateBrokers } from "./kafka/brokers";
 import { KafkaStatusBar } from "./statusBar";
 
@@ -22,6 +27,7 @@ const EDIT_SECURITY = "Edit Connection Security";
 export function activate(context: vscode.ExtensionContext): void {
   const manager = new ClusterManager(context.secrets);
   const treeProvider = new KafkaTreeProvider(manager);
+  TopicPanel.setStorage(context.globalState);
 
   /** The error plus the likely cause/fix manager.connect() worked out, if any. */
   const failureText = (cluster: ClusterConfig, error: unknown): string => {
@@ -49,6 +55,7 @@ export function activate(context: vscode.ExtensionContext): void {
   context.subscriptions.push(
     manager,
     new KafkaStatusBar(manager),
+    new LagMonitor(manager),
     vscode.window.registerTreeDataProvider("kafkaExplorer", treeProvider),
 
     vscode.commands.registerCommand("kafka-manager.refresh", () =>
@@ -56,9 +63,11 @@ export function activate(context: vscode.ExtensionContext): void {
     ),
 
     vscode.commands.registerCommand("kafka-manager.addCluster", async () => {
+      const canShare = !!vscode.workspace.workspaceFolders?.length && vscode.workspace.isTrusted;
+      const steps = canShare ? 4 : 3;
       const existing = new Set(manager.getClusters().map((c) => c.name));
       const name = await vscode.window.showInputBox({
-        title: "Add Kafka Cluster (1/3)",
+        title: `Add Kafka Cluster (1/${steps})`,
         prompt: "Name shown in the Clusters view",
         placeHolder: "Local",
         ignoreFocusOut: true,
@@ -74,7 +83,7 @@ export function activate(context: vscode.ExtensionContext): void {
       }
 
       const brokersInput = await vscode.window.showInputBox({
-        title: "Add Kafka Cluster (2/3)",
+        title: `Add Kafka Cluster (2/${steps})`,
         prompt: "Bootstrap servers as host:port, comma-separated",
         placeHolder: "localhost:9092",
         ignoreFocusOut: true,
@@ -85,12 +94,37 @@ export function activate(context: vscode.ExtensionContext): void {
       }
 
       const brokers = parseBrokers(brokersInput);
-      const security = await promptForSecurity(brokers, "Add Kafka Cluster (3/3)");
+      const security = await promptForSecurity(brokers, `Add Kafka Cluster (3/${steps})`);
       if (!security) {
         return;
       }
 
-      const cluster = await manager.addCluster(name.trim(), brokers, security);
+      let source: ClusterSource = "user";
+      if (canShare) {
+        const where = await vscode.window.showQuickPick(
+          [
+            { label: "User settings", detail: "Only you, in every workspace", source: "user" as const },
+            {
+              label: "Workspace settings",
+              detail: "Saved in .vscode/settings.json so the team can commit and share it. Passwords stay in your secret storage.",
+              source: "workspace" as const,
+            },
+          ],
+          { title: `Add Kafka Cluster (4/${steps})`, placeHolder: "Where should this cluster be saved?", ignoreFocusOut: true },
+        );
+        if (!where) {
+          return;
+        }
+        source = where.source;
+      }
+
+      let cluster: ClusterConfig;
+      try {
+        cluster = await manager.addCluster(name.trim(), brokers, security, source);
+      } catch (error) {
+        vscode.window.showErrorMessage(`Couldn't save the cluster: ${describeError(error)}`);
+        return;
+      }
       treeProvider.refresh();
       try {
         await vscode.window.withProgress(
@@ -258,12 +292,18 @@ export function activate(context: vscode.ExtensionContext): void {
           return;
         }
 
+        const settings = await promptForTopicSettings();
+        if (!settings) {
+          return;
+        }
+
         try {
           await manager.createTopic(
             cluster,
             topic,
             Number(partitionsInput),
             Number(replicationInput),
+            settings,
           );
           vscode.window.showInformationMessage(`Topic "${topic}" created.`);
           treeProvider.refresh();
@@ -593,6 +633,117 @@ export function activate(context: vscode.ExtensionContext): void {
       },
     ),
 
+    vscode.commands.registerCommand(
+      "kafka-manager.viewBroker",
+      (item: BrokerTreeItem) => {
+        BrokerPanel.createOrShow(manager, item.cluster, item.broker.nodeId);
+      },
+    ),
+
+    vscode.commands.registerCommand(
+      "kafka-manager.viewAcls",
+      (item: AclsTreeItem | ClusterTreeItem) => {
+        AclPanel.createOrShow(manager, item.cluster);
+      },
+    ),
+
+    vscode.commands.registerCommand(
+      "kafka-manager.watchGroupLag",
+      async (item: { cluster: ClusterConfig; group: { groupId: string } }) => {
+        const groupId = item.group.groupId;
+        const current = findLagAlert(item.cluster, groupId);
+        const input = await vscode.window.showInputBox({
+          title: `Watch lag of "${groupId}"`,
+          prompt: "Notify when the group's total lag goes above this many messages (checked while the cluster is connected)",
+          value: String(current?.threshold ?? 1000),
+          validateInput: (v) =>
+            Number.isInteger(Number(v)) && Number(v) >= 0 ? undefined : "Enter a whole number of messages",
+        });
+        if (input === undefined) {
+          return;
+        }
+        await setLagAlert(item.cluster, groupId, Number(input));
+        vscode.window.setStatusBarMessage(`Watching lag of "${groupId}" (alert above ${Number(input).toLocaleString()})`, 4000);
+      },
+    ),
+
+    vscode.commands.registerCommand(
+      "kafka-manager.unwatchGroupLag",
+      async (item: GroupTreeItem) => {
+        await setLagAlert(item.cluster, item.group.groupId, undefined);
+      },
+    ),
+
+    vscode.commands.registerCommand(
+      "kafka-manager.configureSchemaRegistry",
+      async (item: ClusterTreeItem) => {
+        const current = manager.getCluster(item.cluster.id);
+        if (!current) {
+          return;
+        }
+        const title = `Schema Registry — ${current.name}`;
+        const url = await vscode.window.showInputBox({
+          title,
+          prompt: "Schema Registry URL — leave empty to remove it",
+          placeHolder: "http://localhost:8081 or https://psrc-xxxx.us-east-2.aws.confluent.cloud",
+          value: current.schemaRegistry?.url ?? "",
+          ignoreFocusOut: true,
+          validateInput: (v) => {
+            if (!v.trim()) {
+              return undefined;
+            }
+            try {
+              const parsed = new URL(v.trim());
+              return /^https?:$/.test(parsed.protocol) ? undefined : "Use an http:// or https:// URL";
+            } catch {
+              return "Enter a URL such as http://localhost:8081";
+            }
+          },
+        });
+        if (url === undefined) {
+          return;
+        }
+        if (!url.trim()) {
+          await manager.updateSchemaRegistry(current.id, undefined);
+          vscode.window.setStatusBarMessage(`Removed the Schema Registry from "${current.name}"`, 3000);
+          return;
+        }
+        const username = await vscode.window.showInputBox({
+          title,
+          prompt: "Username (Confluent Cloud: the Schema Registry API key) — leave empty if the registry has no authentication",
+          value: current.schemaRegistry?.username ?? "",
+          ignoreFocusOut: true,
+        });
+        if (username === undefined) {
+          return;
+        }
+        let password: string | undefined;
+        if (username.trim()) {
+          const keep = current.schemaRegistry?.username === username.trim();
+          password = await vscode.window.showInputBox({
+            title,
+            prompt: keep
+              ? "Password — leave empty to keep the saved one. Stored in VS Code's secret storage."
+              : "Password — stored in VS Code's secret storage, not settings.json.",
+            password: true,
+            ignoreFocusOut: true,
+          });
+          if (password === undefined) {
+            return;
+          }
+          if (keep && password === "") {
+            password = undefined;
+          }
+        }
+        await manager.updateSchemaRegistry(
+          current.id,
+          { url: url.trim(), ...(username.trim() ? { username: username.trim() } : {}) },
+          password,
+        );
+        vscode.window.setStatusBarMessage(`Schema Registry set for "${current.name}"`, 3000);
+      },
+    ),
+
     vscode.commands.registerCommand("kafka-manager.showOutput", () =>
       manager.showOutput(),
     ),
@@ -625,6 +776,45 @@ export function activate(context: vscode.ExtensionContext): void {
       }
     }),
   );
+}
+
+/** Optional retention/cleanup settings for a new topic; `undefined` when cancelled. */
+async function promptForTopicSettings(): Promise<Record<string, string> | undefined> {
+  const choice = await vscode.window.showQuickPick(
+    [
+      { label: "Use broker defaults", custom: false },
+      { label: "Set retention and cleanup policy…", detail: "retention.ms and cleanup.policy", custom: true },
+    ],
+    { placeHolder: "Topic settings" },
+  );
+  if (!choice) {
+    return undefined;
+  }
+  if (!choice.custom) {
+    return {};
+  }
+  const policy = await vscode.window.showQuickPick(
+    [
+      { label: "delete", detail: "Drop old segments after the retention period (default)" },
+      { label: "compact", detail: "Keep the latest value per key" },
+      { label: "compact,delete", detail: "Compact, and also drop segments past retention" },
+    ],
+    { placeHolder: "cleanup.policy" },
+  );
+  if (!policy) {
+    return undefined;
+  }
+  const retention = await vscode.window.showInputBox({
+    prompt: "retention.ms — e.g. 604800000 for 7 days, -1 to keep forever, empty for the broker default",
+    validateInput: (v) => (v.trim() === "" || /^-1$|^\d+$/.test(v.trim()) ? undefined : "Enter milliseconds, -1, or leave empty"),
+  });
+  if (retention === undefined) {
+    return undefined;
+  }
+  return {
+    "cleanup.policy": policy.label,
+    ...(retention.trim() ? { "retention.ms": retention.trim() } : {}),
+  };
 }
 
 export function deactivate(): void {
