@@ -559,12 +559,40 @@ export class ClusterManager implements vscode.Disposable {
     const admin = this.ensureAdmin(cluster);
     const configEntries = Object.entries(config).map(([name, value]) => ({ name, value }));
     const created = await admin.createTopics({
-      waitForLeaders: true,
+      waitForLeaders: false,
       topics: [{ topic, numPartitions, replicationFactor, ...(configEntries.length ? { configEntries } : {}) }],
     });
     if (!created) {
       throw new Error(`Topic "${topic}" already exists`);
     }
+    await this.waitForLeaders(admin, topic, numPartitions);
+  }
+
+  /**
+   * Waits (up to `timeoutMs`) until every partition of a new topic has a leader.
+   * KafkaJS's own `waitForLeaders` only retries LEADER_NOT_AVAILABLE, but a
+   * broker can briefly answer UNKNOWN_TOPIC_OR_PARTITION for a topic it has just
+   * created, which made Create Topic fail although the topic existed.
+   */
+  private async waitForLeaders(admin: Admin, topic: string, partitions: number, timeoutMs = 10_000): Promise<void> {
+    const end = Date.now() + timeoutMs;
+    while (Date.now() < end) {
+      try {
+        const { topics } = await admin.fetchTopicMetadata({ topics: [topic] });
+        const metadata = topics.find((t) => t.name === topic);
+        if (metadata && metadata.partitions.length >= partitions && metadata.partitions.every((p) => p.leader >= 0)) {
+          return;
+        }
+      } catch (error) {
+        const type = (error as { type?: string }).type;
+        if (type !== "UNKNOWN_TOPIC_OR_PARTITION" && type !== "LEADER_NOT_AVAILABLE") {
+          throw error;
+        }
+      }
+      await new Promise((resolve) => setTimeout(resolve, 200));
+    }
+    // The topic exists; leaders are just slow to be elected. Not worth failing over.
+    this.log(`Created "${topic}", but not every partition had a leader after ${timeoutMs / 1000}s.`);
   }
 
   async deleteTopic(cluster: ClusterConfig, topic: string): Promise<void> {

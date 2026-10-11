@@ -129,6 +129,23 @@ suite('ClusterManager with a fake broker', () => {
 		await assert.rejects(manager.describeTopic(cluster, 'gone'), /Topic "gone" no longer exists on "Fake"/);
 	});
 
+	test('Create Topic waits out a broker that briefly does not know the new topic', async () => {
+		let lookups = 0;
+		Object.assign(admin, {
+			createTopics: async () => true,
+			fetchTopicMetadata: async () => {
+				if (++lookups < 3) {
+					throw Object.assign(new Error('This server does not host this topic-partition'), { type: 'UNKNOWN_TOPIC_OR_PARTITION' });
+				}
+				return { topics: [{ name: 'fresh', partitions: [{ partitionId: 0, leader: 1, replicas: [1], isr: [1] }] }] };
+			},
+		});
+
+		await manager.createTopic(cluster, 'fresh', 1, 1);
+
+		assert.strictEqual(lookups, 3);
+	});
+
 	test('the producer stays connected between sends', async () => {
 		await manager.produce(cluster, 'orders', { value: 'a' });
 		await manager.produce(cluster, 'orders', { value: 'b', key: 'k', headers: { h: '1' } });

@@ -89,6 +89,6 @@ export class SchemaRegistryClient implements RegistryDecoder {
   }
 
   listSubjects(): Promise<string[]> {
-    return this.get<string[]>("/subjects").then((s) => s.slice().sort());
+    return this.get<string[]>("/subjects").then((s) => s.slice().sort((a, b) => a.localeCompare(b)));
   }
 }
