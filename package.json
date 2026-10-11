@@ -589,7 +589,7 @@
     "ts-loader": "^9.5.1",
     "typescript": "^7.0.0",
     "webpack": "^5.95.0",
-    "webpack-cli": "^5.1.4"
+    "webpack-cli": "^7.0.0"
   },
   "dependencies": {
     "@kafkajs/confluent-schema-registry": "^4.1.0",
