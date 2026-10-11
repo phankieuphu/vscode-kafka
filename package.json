@@ -579,7 +579,7 @@
   },
   "devDependencies": {
     "@types/mocha": "^10.0.9",
-    "@types/node": "24.x",
+    "@types/node": "20.x",
     "@types/vscode": "^1.96.0",
     "@typescript-eslint/eslint-plugin": "^8.10.0",
     "@typescript-eslint/parser": "^8.7.0",
@@ -587,7 +587,7 @@
     "@vscode/test-electron": "^3.1.0",
     "eslint": "^10.0.0",
     "ts-loader": "^9.5.1",
-    "typescript": "^7.0.0",
+    "typescript": "^5.6.3",
     "webpack": "^5.95.0",
     "webpack-cli": "^7.0.0"
   },

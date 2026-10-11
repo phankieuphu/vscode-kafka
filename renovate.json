@@ -2,5 +2,17 @@
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
   "extends": [
     "config:recommended"
+  ],
+  "packageRules": [
+    {
+      "description": "typescript-eslint 8 only accepts TypeScript >=4.8.4 <6.1.0; TypeScript 7 broke npm ci. Raise this when typescript-eslint supports newer versions.",
+      "matchPackageNames": ["typescript"],
+      "allowedVersions": "<6.1.0"
+    },
+    {
+      "description": "Typings must match the Node.js inside the oldest supported VS Code (engines.vscode ^1.96.0 ships Node 20), or code can use APIs that don't exist at runtime. Raise together with engines.vscode.",
+      "matchPackageNames": ["@types/node"],
+      "allowedVersions": "20.x"
+    }
   ]
 }
