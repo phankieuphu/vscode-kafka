@@ -66,7 +66,9 @@ export class DashboardPanel {
       { enableScripts: true, retainContextWhenHidden: true }
     );
 
-    DashboardPanel.panels.set(cluster.id, new DashboardPanel(panel, manager, cluster));
+    const instance = new DashboardPanel(panel, manager, cluster);
+    DashboardPanel.panels.set(cluster.id, instance);
+    void instance.postAi();
   }
 
   private constructor(
@@ -98,7 +100,6 @@ export class DashboardPanel {
     );
 
     this.postConnection();
-    void this.postAi();
     this.load();
   }
 

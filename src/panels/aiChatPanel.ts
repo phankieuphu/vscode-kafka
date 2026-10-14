@@ -184,7 +184,7 @@ export class AiChatPanel {
       }
       const topics = await this.manager.listTopics(cluster).catch(() => []);
       const picked = await vscode.window.showQuickPick(
-        topics.map((t) => t.name).sort(),
+        topics.map((t) => t.name).sort((a, b) => a.localeCompare(b)),
         { title: "Explain which topic?", placeHolder: "Topic" },
       );
       if (!picked) {

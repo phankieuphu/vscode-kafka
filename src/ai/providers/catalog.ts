@@ -28,6 +28,8 @@ export interface ProviderInfo {
   keyUrl?: string;
   /** What keys usually look like, to catch a key pasted into the wrong provider. */
   keyPattern?: RegExp;
+  /** The start of a key, for the input placeholder. */
+  keyHint?: string;
   /** Used when the model list can't be read. */
   fallbackModel?: string;
   /** The user has to enter the endpoint (Azure, custom gateways). */
@@ -50,6 +52,7 @@ export const PROVIDERS: readonly ProviderInfo[] = [
     envVars: ["ANTHROPIC_API_KEY"],
     keyUrl: "https://console.anthropic.com/settings/keys",
     keyPattern: /^sk-ant-/,
+    keyHint: "sk-ant-",
     fallbackModel: "claude-sonnet-5-5",
     defaultInputTokens: 200_000,
   },
@@ -64,6 +67,7 @@ export const PROVIDERS: readonly ProviderInfo[] = [
     envVars: ["OPENAI_API_KEY"],
     keyUrl: "https://platform.openai.com/api-keys",
     keyPattern: /^sk-(?!ant-|or-)/,
+    keyHint: "sk-",
     fallbackModel: "gpt-5.5",
     defaultInputTokens: 128_000,
   },
@@ -78,6 +82,7 @@ export const PROVIDERS: readonly ProviderInfo[] = [
     envVars: ["GEMINI_API_KEY", "GOOGLE_API_KEY"],
     keyUrl: "https://aistudio.google.com/apikey",
     keyPattern: /^AIza/,
+    keyHint: "AIza",
     fallbackModel: "gemini-flash-latest",
     defaultInputTokens: 1_000_000,
   },
@@ -92,6 +97,7 @@ export const PROVIDERS: readonly ProviderInfo[] = [
     envVars: ["OPENROUTER_API_KEY"],
     keyUrl: "https://openrouter.ai/settings/keys",
     keyPattern: /^sk-or-/,
+    keyHint: "sk-or-",
     fallbackModel: "anthropic/claude-sonnet-5.5",
     defaultInputTokens: 128_000,
   },
@@ -142,6 +148,7 @@ export const PROVIDERS: readonly ProviderInfo[] = [
     envVars: ["XAI_API_KEY"],
     keyUrl: "https://console.x.ai/",
     keyPattern: /^xai-/,
+    keyHint: "xai-",
     defaultInputTokens: 128_000,
   },
   {
@@ -168,6 +175,7 @@ export const PROVIDERS: readonly ProviderInfo[] = [
     envVars: ["GROQ_API_KEY"],
     keyUrl: "https://console.groq.com/keys",
     keyPattern: /^gsk_/,
+    keyHint: "gsk_",
     defaultInputTokens: 128_000,
   },
   {
@@ -220,7 +228,11 @@ export function getProvider(id: string): ProviderInfo | undefined {
 
 /** Strips trailing slashes so `${base}/models` never has `//`. */
 export function normalizeBaseUrl(url: string): string {
-  return url.trim().replace(/\/+$/, "");
+  let end = url.trim();
+  while (end.endsWith("/")) {
+    end = end.slice(0, -1);
+  }
+  return end;
 }
 
 /** Problem with a base URL, or undefined. Plain http is only allowed to this machine. */

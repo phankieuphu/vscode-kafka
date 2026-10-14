@@ -5,8 +5,9 @@
 import type { KafkaReader } from '../../ai/tools';
 import { BrokerDetails, ClusterConfig, ClusterOverview, ConnectionStatus, ConsumedMessage, GroupDetails, GroupOffsetEntry, TopicConfigEntry, TopicDetails } from '../../kafka/types';
 
-export const SECRETS = {
-	saslPassword: 'hunter2-very-secret',
+// Fake credentials, planted to prove redaction strips them. NOSONAR
+export const SECRETS = { // NOSONAR
+	saslPassword: 'hunter2-very-secret', // NOSONAR: fake, for redaction tests
 	saslUser: 'svc-orders-user',
 	registryPassword: 'reg-pa55word-xyz',
 	registryUser: 'SRKEY123456',

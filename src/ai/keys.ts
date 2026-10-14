@@ -82,7 +82,7 @@ const OPENROUTER_KEYS = "https://openrouter.ai/api/v1/auth/keys";
 const SIGN_IN_TIMEOUT_MS = 5 * 60_000;
 
 function base64Url(buffer: Buffer): string {
-  return buffer.toString("base64").replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+  return buffer.toString("base64url");
 }
 
 export interface PkcePair {

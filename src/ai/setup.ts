@@ -420,7 +420,7 @@ export async function promptApiKey(provider: ProviderInfo): Promise<boolean> {
   input.prompt = `Stored in your OS keychain through VS Code's secret storage; never in settings.${provider.keyUrl ? ` Get a key at ${provider.keyUrl}` : ""}`;
   input.password = true;
   input.ignoreFocusOut = true;
-  input.placeholder = provider.keyPattern ? `${provider.keyPattern.source.replace(/[\^\\]/g, "").replace(/\(.*\)/, "")}…` : "API key";
+  input.placeholder = provider.keyHint ? `${provider.keyHint}…` : "API key";
   const openKey: vscode.QuickInputButton = { iconPath: new vscode.ThemeIcon("link-external"), tooltip: "Get an API key" };
   if (provider.keyUrl) {
     input.buttons = [openKey];

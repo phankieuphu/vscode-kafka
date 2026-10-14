@@ -65,6 +65,7 @@ export class GroupPanel {
 
     const instance = new GroupPanel(panel, manager, cluster, groupId, key);
     GroupPanel.panels.set(key, instance);
+    void instance.postAi();
   }
 
   private constructor(
@@ -99,7 +100,6 @@ export class GroupPanel {
     );
 
     this.postConnection();
-    void this.postAi();
     this.load();
   }
 

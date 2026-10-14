@@ -63,6 +63,7 @@ export async function fitToBudget(
         (b.section.priority === a.section.priority && b.index > a.index)
           ? b
           : a,
+        kept[0],
       );
       const room = target - (total - victim.tokens);
       const cut = room >= MIN_SECTION_TOKENS ? await shorten(victim.section, victim.tokens, room, count) : undefined;

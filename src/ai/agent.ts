@@ -39,11 +39,11 @@ export async function runAgent(
 ): Promise<AgentResult> {
   const messages: AiMessage[] = [...request.messages];
   const result: AgentResult = { text: "", toolCalls: [] };
-  let tools = request.tools;
+  let toolsRefused = false;
 
   for (let round = 0; round <= maxRounds; round++) {
-    // Last round: no tools, so the model has to answer with what it has.
-    const offer = round < maxRounds ? tools : undefined;
+    // Last round (or a model that refused tools): no tools, so the model has to answer with what it has.
+    const offer = round < maxRounds && !toolsRefused ? request.tools : undefined;
     const calls: Array<Extract<AiPart, { type: "toolCall" }>> = [];
     let text = "";
     try {
@@ -65,8 +65,7 @@ export async function runAgent(
       }
       // Some models (small local ones, some gateways) refuse tool definitions: retry once without.
       if (offer && round === 0 && !text && error instanceof AiProviderError && error.kind === "badRequest") {
-        tools = undefined;
-        round = maxRounds - 1;
+        toolsRefused = true;
         continue;
       }
       result.error = describe(error);

@@ -14,7 +14,7 @@ function inline(raw: string): string {
   const codes: string[] = [];
   let text = escape(raw).replace(/`([^`]+)`/g, (_, code: string) => {
     codes.push(`<code>${code}</code>`);
-    return `\u0000${codes.length - 1}\u0000`;
+    return `\uE000${codes.length - 1}\uE001`;
   });
   text = text.replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, (match, label: string, url: string) => {
     const decoded = url.replace(/&amp;/g, "&");
@@ -26,7 +26,7 @@ function inline(raw: string): string {
     .replace(/(^|[^\w*])\*([^*\s][^*]*?)\*(?!\w)/g, "$1<em>$2</em>")
     .replace(/(^|[^\w])_([^_\s][^_]*?)_(?!\w)/g, "$1<em>$2</em>")
     .replace(/~~([^~]+)~~/g, "<del>$1</del>");
-  return text.replace(/\u0000(\d+)\u0000/g, (_, i: string) => codes[Number(i)]);
+  return text.replace(/\uE000(\d+)\uE001/g, (_, i: string) => codes[Number(i)]);
 }
 
 function splitRow(line: string): string[] {
