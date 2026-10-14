@@ -1,5 +1,6 @@
 import * as vscode from "vscode";
 import { ClusterManager, describeError } from "./kafka/clusterManager";
+import { analyzeLag, LagHistory, LagSample, toSample } from "./kafka/lagTrend";
 import { ClusterConfig, LagAlert } from "./kafka/types";
 
 const ALERTS_KEY = "lagAlerts";
@@ -34,6 +35,14 @@ export function evaluateLag(
   };
 }
 
+export function historyKey(clusterId: string, group: string): string {
+  return `${clusterId}\u0000${group}`;
+}
+
+function escapeMd(text: string): string {
+  return text.replace(/[\\`*_{}[\]()#+\-.!|<>]/g, "\\$&");
+}
+
 export function getLagAlerts(): LagAlert[] {
   const alerts = vscode.workspace.getConfiguration("kafka").get<LagAlert[]>(ALERTS_KEY, []);
   return Array.isArray(alerts) ? alerts.filter((a) => a && a.group && a.cluster && Number.isFinite(a.threshold)) : [];
@@ -57,7 +66,19 @@ export async function setLagAlert(cluster: ClusterConfig, groupId: string, thres
  * shows a status bar warning while any is over its threshold, and notifies
  * once per crossing.
  */
+/** Optional AI hooks, so the monitor works (and is tested) without them. */
+export interface LagAiHooks {
+  /** AI is enabled, trusted and a provider is set up: show "Analyze". */
+  available(): Promise<boolean>;
+  /** A one-line cause from the model, for `kafka.ai.autoAnalyzeLagAlerts`; undefined to skip. */
+  summarize?(cluster: ClusterConfig, group: string, samples: LagSample[], threshold: bigint): Promise<string | undefined>;
+}
+
+export const ANALYZE = "Analyze";
+
 export class LagMonitor implements vscode.Disposable {
+  /** The last readings of each watched group, in memory only. */
+  readonly history = new LagHistory();
   private readonly item = vscode.window.createStatusBarItem("kafka-manager.lag", vscode.StatusBarAlignment.Left, 49);
   private readonly subscriptions: vscode.Disposable[];
   private over = new Set<string>();
@@ -65,7 +86,10 @@ export class LagMonitor implements vscode.Disposable {
   private timer: NodeJS.Timeout | undefined;
   private running = false;
 
-  constructor(private readonly manager: ClusterManager) {
+  constructor(
+    private readonly manager: ClusterManager,
+    private readonly ai?: LagAiHooks,
+  ) {
     this.item.name = "Kafka Lag Alerts";
     this.subscriptions = [
       vscode.workspace.onDidChangeConfiguration((e) => {
@@ -89,7 +113,7 @@ export class LagMonitor implements vscode.Disposable {
       this.timer = undefined;
     }
     if (getLagAlerts().length === 0) {
-      this.update(new Set());
+      void this.update(new Set());
       return;
     }
     const seconds = Math.max(10, vscode.workspace.getConfiguration("kafka").get<number>(INTERVAL_KEY, 60));
@@ -112,8 +136,12 @@ export class LagMonitor implements vscode.Disposable {
           continue;
         }
         try {
-          const lag = await this.manager.getGroupLag(cluster, alert.group);
-          const key = `${cluster.id}\u0000${alert.group}`;
+          // Same broker calls as getGroupLag; the per-partition detail feeds the trend.
+          const entries = await this.manager.fetchGroupOffsets(cluster, alert.group);
+          const sample = toSample(entries);
+          const lag = sample.total;
+          const key = historyKey(cluster.id, alert.group);
+          this.history.push(key, sample);
           const threshold = BigInt(Math.max(0, Math.trunc(alert.threshold)));
           readings.push({ key, lag, threshold });
           details.set(key, { cluster, group: alert.group, lag, threshold });
@@ -122,30 +150,47 @@ export class LagMonitor implements vscode.Disposable {
         }
       }
       this.details = details;
+      this.history.retain(new Set(readings.map((r) => r.key)));
       const result = evaluateLag(readings, this.over);
       for (const key of result.crossed) {
-        const d = details.get(key)!;
-        void vscode.window
-          .showWarningMessage(
-            `Consumer group "${d.group}" on "${d.cluster.name}" is ${d.lag.toLocaleString()} messages behind (threshold ${d.threshold.toLocaleString()}).`,
-            "Open Group",
-            "Stop Watching",
-          )
-          .then((choice) => {
-            if (choice === "Open Group") {
-              vscode.commands.executeCommand("kafka-manager.viewConsumerGroup", { cluster: d.cluster, group: { groupId: d.group } });
-            } else if (choice === "Stop Watching") {
-              void setLagAlert(d.cluster, d.group, undefined);
-            }
-          });
+        void this.notify(details.get(key)!);
       }
-      this.update(result.over);
+      await this.update(result.over);
     } finally {
       this.running = false;
     }
   }
 
-  private update(over: Set<string>): void {
+  /** One notification per crossing, with Kafka Manager's own guess at the cause and, if AI is set up, Analyze. */
+  private async notify(d: { cluster: ClusterConfig; group: string; lag: bigint; threshold: bigint }): Promise<void> {
+    const samples = this.history.get(historyKey(d.cluster.id, d.group));
+    const finding = analyzeLag(samples).findings[0];
+    const aiReady = (await this.ai?.available().catch(() => false)) ?? false;
+    let summary: string | undefined;
+    if (aiReady && this.ai?.summarize && vscode.workspace.getConfiguration("kafka.ai").get<boolean>("autoAnalyzeLagAlerts", false)) {
+      summary = await this.ai.summarize(d.cluster, d.group, samples, d.threshold).catch(() => undefined);
+    }
+    const why = summary ? ` AI: ${summary}` : finding ? ` ${finding.text}` : "";
+    const actions = aiReady ? [ANALYZE, "Open Group", "Stop Watching"] : ["Open Group", "Stop Watching"];
+    const choice = await vscode.window.showWarningMessage(
+      `Consumer group "${d.group}" on "${d.cluster.name}" is ${d.lag.toLocaleString()} messages behind (threshold ${d.threshold.toLocaleString()}).${why}`,
+      ...actions,
+    );
+    if (choice === ANALYZE) {
+      void vscode.commands.executeCommand("kafka-manager.analyzeLag", { cluster: d.cluster, group: { groupId: d.group } });
+    } else if (choice === "Open Group") {
+      void vscode.commands.executeCommand("kafka-manager.viewConsumerGroup", { cluster: d.cluster, group: { groupId: d.group } });
+    } else if (choice === "Stop Watching") {
+      void setLagAlert(d.cluster, d.group, undefined);
+    }
+  }
+
+  /** Readings of one watched group, oldest first. */
+  getHistory(clusterId: string, group: string): LagSample[] {
+    return this.history.get(historyKey(clusterId, group));
+  }
+
+  private async update(over: Set<string>): Promise<void> {
     this.over = over;
     if (over.size === 0) {
       this.item.hide();
@@ -154,7 +199,19 @@ export class LagMonitor implements vscode.Disposable {
     const list = [...over].map((k) => this.details.get(k)).filter((d) => d !== undefined);
     this.item.text = `$(warning) Lag: ${over.size} group${over.size === 1 ? "" : "s"}`;
     this.item.backgroundColor = new vscode.ThemeColor("statusBarItem.warningBackground");
-    this.item.tooltip = list.map((d) => `${d.group} (${d.cluster.name}): ${d.lag.toLocaleString()} > ${d.threshold.toLocaleString()}`).join("\n");
+    const aiReady = (await this.ai?.available().catch(() => false)) ?? false;
+    const tooltip = new vscode.MarkdownString(undefined, true);
+    tooltip.isTrusted = { enabledCommands: ["kafka-manager.viewConsumerGroup", "kafka-manager.analyzeLag"] };
+    for (const d of list) {
+      const args = encodeURIComponent(JSON.stringify([{ cluster: d.cluster, group: { groupId: d.group } }]));
+      tooltip.appendMarkdown(
+        `**${escapeMd(d.group)}** (${escapeMd(d.cluster.name)}): ${d.lag.toLocaleString()} > ${d.threshold.toLocaleString()} — ` +
+          `[Open](command:kafka-manager.viewConsumerGroup?${args})` +
+          (aiReady ? ` · [$(sparkle) Analyze](command:kafka-manager.analyzeLag?${args})` : "") +
+          "\n\n",
+      );
+    }
+    this.item.tooltip = tooltip;
     const first = list[0];
     this.item.command = first
       ? { title: "Open Group", command: "kafka-manager.viewConsumerGroup", arguments: [{ cluster: first.cluster, group: { groupId: first.group } }] }

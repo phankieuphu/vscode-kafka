@@ -7,9 +7,11 @@ import {
   disconnectedBannerScript,
   watchCluster,
 } from "./clusterWatch";
-import { baseCss, contentSecurityPolicy, createNonce, icons, scriptValue, sharedScript } from "./webview";
+import { baseCss, contentSecurityPolicy, createNonce, icons, scriptValue, sharedScript, sparkleIcon } from "./webview";
+import { isAiReady, onDidChangeAiAvailability } from "../ai/model";
+import { openAssistant } from "../ai/open";
 
-type WebviewInMessage = { command: "ready" } | { command: "refresh" } | { command: "connect" };
+type WebviewInMessage = { command: "ready" } | { command: "refresh" } | { command: "connect" } | { command: "explainAi" };
 
 /** Read-only view of one broker: role, partition load and its effective settings. */
 export class BrokerPanel {
@@ -60,12 +62,26 @@ export class BrokerPanel {
           this.postConnection();
         },
       }),
+      onDidChangeAiAvailability(() => void this.postAi()),
     );
+  }
+
+  private async postAi(): Promise<void> {
+    this.post({ command: "ai", available: await isAiReady() });
   }
 
   private async handleMessage(message: WebviewInMessage): Promise<void> {
     switch (message.command) {
+      case "explainAi":
+        openAssistant(this.manager, this.cluster.id, {
+          task: "broker-config",
+          prompt: "",
+          label: `Explain broker ${this.nodeId}'s settings`,
+          target: { brokerId: this.nodeId },
+        });
+        break;
       case "ready":
+        void this.postAi();
         this.postConnection();
         await this.load();
         break;
@@ -133,7 +149,10 @@ ${disconnectedBannerCss}
         <div class="title"><h1>Broker ${this.nodeId}</h1><span class="chip" id="role">…</span></div>
         <div class="sub" id="meta"></div>
       </div>
-      <div class="toolbar" data-needs-connection><button class="secondary" id="refreshBtn">${icons.refresh}Refresh</button></div>
+      <div class="toolbar" data-needs-connection>
+        <button class="secondary" id="explainAiBtn" hidden title="Explain notable settings and risky ones with AI">${sparkleIcon}Explain config</button>
+        <button class="secondary" id="refreshBtn">${icons.refresh}Refresh</button>
+      </div>
     </header>
     <div class="progress" id="progress"></div>
     <div id="status" role="status" style="margin-bottom:10px"></div>
@@ -181,6 +200,7 @@ ${disconnectedBannerScript}
     }
 
     $('refreshBtn').addEventListener('click', () => vscode.postMessage({ command: 'refresh' }));
+    $('explainAiBtn').addEventListener('click', () => vscode.postMessage({ command: 'explainAi' }));
     $('filter').addEventListener('input', render);
     $('showDefaults').addEventListener('change', render);
     window.addEventListener('message', (event) => {
@@ -188,6 +208,7 @@ ${disconnectedBannerScript}
       switch (m.command) {
         case 'connection': state.clusterName = m.clusterName; renderConnection(m.status, m.clusterName); render(); break;
         case 'broker': state.broker = m.broker; state.at = m.at; $('status').textContent = ''; render(); break;
+        case 'ai': $('explainAiBtn').hidden = !m.available; break;
         case 'loading': $('progress').classList.toggle('active', m.value); $('refreshBtn').disabled = m.value; break;
         case 'status': $('status').textContent = m.text; $('status').classList.toggle('error', !!m.error); break;
       }

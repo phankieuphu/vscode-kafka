@@ -36,6 +36,10 @@ const PATTERNS: Array<[RegExp, string | ((match: string, ...groups: string[]) =>
     keepQuotes,
   ],
   [/(\bauthorization["']?\s*[=:]\s*["']?)(?:basic|bearer)\s+[\w.~+/=-]+/gi, `$1${REDACTED}`],
+  // AI provider API keys (OpenAI, Anthropic, OpenRouter, Google, Groq, xAI).
+  [/\bsk-(?:ant-|or-|proj-|svcacct-)?[A-Za-z0-9_-]{20,}/g, REDACTED],
+  [/\bAIza[0-9A-Za-z_-]{30,}/g, REDACTED],
+  [/\b(?:gsk|xai)[-_][A-Za-z0-9_-]{20,}/g, REDACTED],
   // AWS access key ids.
   [/\b(?:AKIA|ASIA|AGPA|AIDA|AROA|ANPA|ANVA|AIPA)[A-Z0-9]{16}\b/g, REDACTED],
   // Certificate, key and keystore files. `.key`/`.cert` only with a directory, so `record.key` survives.

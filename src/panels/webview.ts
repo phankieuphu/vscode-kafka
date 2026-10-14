@@ -190,3 +190,24 @@ export const sharedScript = /* js */ `
       }).join('') + '</tr></thead>';
     }
 `;
+
+/** Styles for AI answers rendered by `renderMarkdown`. */
+export const markdownCss = /* css */ `
+  .md { line-height: 1.55; overflow-wrap: anywhere; }
+  .md > :first-child { margin-top: 0; }
+  .md > :last-child { margin-bottom: 0; }
+  .md p { margin: 6px 0; }
+  .md pre { background: var(--vscode-textCodeBlock-background, var(--card)); padding: 8px 10px; border-radius: 4px; overflow-x: auto; font-family: var(--mono); font-size: 12px; }
+  .md code { font-family: var(--mono); font-size: 12px; background: var(--vscode-textCodeBlock-background, var(--card)); padding: 0 3px; border-radius: 3px; }
+  .md pre code { background: none; padding: 0; }
+  .md table { margin: 8px 0; width: auto; }
+  .md td, .md th { white-space: normal; }
+  .md h3, .md h4, .md h5, .md h6 { margin: 12px 0 4px; font-size: 13px; }
+  .md blockquote { margin: 6px 0; padding-left: 10px; border-left: 3px solid var(--border); color: var(--muted); }
+  .md ul, .md ol { padding-left: 20px; margin: 6px 0; }
+  .md .nested { padding-left: 16px; display: inline-block; }
+  .md hr { border: none; border-top: 1px solid var(--border); }
+`;
+
+/** Sparkle icon for AI buttons. */
+export const sparkleIcon = '<svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 1l1.4 3.9L13 6.5 9.4 8 8 12 6.6 8 3 6.5l3.6-1.6zM13 10l.7 1.6 1.3.6-1.3.6L13 14.5l-.7-1.7-1.3-.6 1.3-.6z"/></svg>';

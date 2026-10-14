@@ -1,9 +1,12 @@
 import * as vscode from "vscode";
 import { describeModelError } from "./model";
+import { AiModel, AiRequest, CancellationLike } from "./providers/types";
 
-/** Where a model's answer goes: a chat response, or the Kafka AI output channel. */
+/** Where a model's answer goes: a chat response, a webview panel, or the Kafka AI output channel. */
 export interface AiOutput {
   write(markdown: string): void;
+  /** Short status while tools run, e.g. "Reading consumer group orders…". */
+  progress?(text: string): void;
 }
 
 let channel: vscode.OutputChannel | undefined;
@@ -20,36 +23,39 @@ export function disposeAiOutputChannel(): void {
 }
 
 export function chatOutput(stream: vscode.ChatResponseStream): AiOutput {
-  return { write: (markdown) => stream.markdown(markdown) };
+  return { write: (markdown) => stream.markdown(markdown), progress: (text) => stream.progress(text) };
 }
 
 export function channelOutput(target: vscode.OutputChannel = aiOutputChannel()): AiOutput {
-  return { write: (text) => target.append(text) };
+  return { write: (text) => target.append(text), progress: (text) => target.appendLine(`\n[${text}]`) };
+}
+
+/** Collects the reply in a string; for background use (lag alerts). */
+export function bufferOutput(): AiOutput & { text(): string } {
+  let text = "";
+  return { write: (t) => (text += t), text: () => text };
 }
 
 /**
- * Sends `messages` to `model` and streams the reply into `out`. Resolves the
- * full reply; on failure writes a readable error and resolves undefined.
+ * Sends `request` to `model` and streams the text reply into `out`. Resolves
+ * the full reply; on failure writes a readable error and resolves undefined.
  */
 export async function streamModelResponse(
-  model: vscode.LanguageModelChat,
-  messages: vscode.LanguageModelChatMessage[],
+  model: AiModel,
+  request: AiRequest,
   out: AiOutput,
-  token: vscode.CancellationToken,
+  token: CancellationLike,
 ): Promise<string | undefined> {
   let reply = "";
   try {
-    const response = await model.sendRequest(
-      messages,
-      { justification: "Explain Kafka cluster state shown in Kafka Manager." },
-      token,
-    );
-    for await (const fragment of response.text) {
+    for await (const event of model.stream(request, token)) {
       if (token.isCancellationRequested) {
         break;
       }
-      reply += fragment;
-      out.write(fragment);
+      if (event.type === "text") {
+        reply += event.text;
+        out.write(event.text);
+      }
     }
     return reply;
   } catch (error) {

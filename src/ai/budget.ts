@@ -3,6 +3,13 @@ export interface ContextSection {
   title: string;
   text: string;
   priority: number;
+  /** The same data as rows, for the chat panel to show next to the answer. Never sent to the model. */
+  table?: ContextTable;
+}
+
+export interface ContextTable {
+  columns: string[];
+  rows: string[][];
 }
 
 export type TokenCounter = (text: string) => Thenable<number> | number;

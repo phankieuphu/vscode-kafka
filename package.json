@@ -1,7 +1,7 @@
 {
   "name": "kafka-manager",
   "displayName": "Kafka Manager",
-  "description": "Manage Apache Kafka clusters from VS Code: browse topics and partitions, inspect consumer groups and lag, and produce/tail messages.",
+  "description": "Manage Apache Kafka clusters from VS Code: browse topics and partitions, inspect consumer groups and lag, produce/tail messages, and explain problems with AI (Claude, GPT, Gemini, Ollama or Copilot).",
   "publisher": "PatrickPhan",
   "version": "0.3.0",
   "icon": "resources/icon.png",
@@ -14,7 +14,9 @@
     "vscode": "^1.96.0"
   },
   "categories": [
-    "Other"
+    "Other",
+    "AI",
+    "Chat"
   ],
   "activationEvents": [],
   "main": "./dist/extension.js",
@@ -183,22 +185,107 @@
         "kafka.ai.enabled": {
           "type": "boolean",
           "default": true,
-          "markdownDescription": "Enable AI features (explanations, `@kafka` chat, tools). They use the chat model you already have in VS Code, such as GitHub Copilot, and are always off in untrusted workspaces. Run **Kafka: AI Setup…** to see the status and change these settings."
+          "markdownDescription": "Enable AI features: the Kafka AI chat, `@kafka` in the Chat view, Explain buttons, lag analysis and `#kafka_*` tools. Always off in untrusted workspaces. Run **Kafka: AI Setup…** to choose a provider and see what is sent."
         },
-        "kafka.ai.modelFamily": {
+        "kafka.ai.provider": {
+          "type": "string",
+          "default": "auto",
+          "scope": "application",
+          "enum": [
+            "auto",
+            "anthropic",
+            "openai",
+            "gemini",
+            "openrouter",
+            "vscode",
+            "azureOpenai",
+            "mistral",
+            "xai",
+            "deepseek",
+            "groq",
+            "ollama",
+            "lmstudio",
+            "custom"
+          ],
+          "enumItemLabels": [
+            "Auto",
+            "Anthropic Claude",
+            "OpenAI GPT",
+            "Google Gemini",
+            "OpenRouter",
+            "VS Code language models",
+            "Azure OpenAI",
+            "Mistral AI",
+            "xAI Grok",
+            "DeepSeek",
+            "Groq",
+            "Ollama (local)",
+            "LM Studio (local)",
+            "Custom OpenAI-compatible endpoint"
+          ],
+          "markdownEnumDescriptions": [
+            "The first provider with an API key (Claude, GPT, Gemini, OpenRouter…), else VS Code's chat models.",
+            "Claude models with an Anthropic API key",
+            "GPT models with an OpenAI API key",
+            "Gemini models with a Google AI Studio API key (free tier available)",
+            "Sign in with your browser: Claude, GPT, Gemini, Llama, Mistral and more with one account",
+            "GitHub Copilot or any chat model extension, signed in through VS Code",
+            "Your Azure OpenAI or Azure AI Foundry deployment (OpenAI v1 API)",
+            "Mistral models with a Mistral API key",
+            "Grok models with an xAI API key",
+            "DeepSeek models with a DeepSeek API key",
+            "Fast open models (Llama, Qwen, GPT-OSS…) with a Groq API key",
+            "Models running on this machine with Ollama; nothing leaves your computer",
+            "Models served by LM Studio on this machine; nothing leaves your computer",
+            "LiteLLM, vLLM, a company gateway or any server with the OpenAI Chat Completions API"
+          ],
+          "markdownDescription": "Where AI requests go. API keys are kept in VS Code's secret storage (your OS keychain), never in settings; set them with **Kafka: Set AI API Key…** or **Kafka: AI Setup…**. User settings only."
+        },
+        "kafka.ai.model": {
           "type": "string",
           "default": "",
-          "markdownDescription": "Chat model family to use, e.g. `gpt-4o` or `claude-sonnet-4`. Leave empty to use any available model."
+          "markdownDescription": "Model id for the provider, e.g. `claude-sonnet-5-5`, `gpt-5.5`, `gemini-flash-latest`, `llama3.2` (Ollama) or a VS Code model family. Leave empty for the provider's recommended model. **Kafka: Select AI Model…** lists what your key can use."
+        },
+        "kafka.ai.baseUrl": {
+          "type": "string",
+          "default": "",
+          "scope": "application",
+          "markdownDescription": "Endpoint override for the provider: required for Azure OpenAI (`https://<resource>.openai.azure.com/openai/v1`) and custom OpenAI-compatible servers; optional otherwise (proxies, Ollama on another host). Must be `https://`, or `http://` to localhost. User settings only, so a workspace can't redirect your API key."
+        },
+        "kafka.ai.maxOutputTokens": {
+          "type": "number",
+          "default": 2048,
+          "minimum": 256,
+          "maximum": 32000,
+          "markdownDescription": "Longest answer, in tokens, requested from API-key providers."
         },
         "kafka.ai.includeMessagePayloads": {
           "type": "boolean",
           "default": false,
-          "markdownDescription": "Send message keys and values (truncated) to the chat model. Off by default: only metadata such as topic names, offsets and configs is sent."
+          "markdownDescription": "Send message keys, headers and values (truncated, credentials stripped) to the model, for **Explain message**, **Infer schema** and the `kafka_peekMessages` tool. Off by default: only metadata such as topic names, offsets and configs is sent."
         },
         "kafka.ai.maskHosts": {
           "type": "boolean",
           "default": false,
-          "markdownDescription": "Replace broker and Schema Registry hostnames with placeholders before sending context to the chat model."
+          "markdownDescription": "Replace broker and Schema Registry hostnames with placeholders (`host-1`, `host-2`…) before sending context to the model."
+        },
+        "kafka.ai.chatLocation": {
+          "type": "string",
+          "default": "panel",
+          "enum": [
+            "panel",
+            "chatView"
+          ],
+          "markdownEnumDescriptions": [
+            "The Kafka AI panel inside Kafka Manager. Works with every provider.",
+            "VS Code's Chat view (`@kafka`). Needs a chat extension such as GitHub Copilot to show the Chat view."
+          ],
+          "markdownDescription": "Where **Ask AI** opens. Explain buttons that send messages or lag readings always use the Kafka AI panel."
+        },
+        "kafka.ai.autoAnalyzeLagAlerts": {
+          "type": "boolean",
+          "default": false,
+          "markdownDescription": "When a lag alert fires, ask the model for a one-line likely cause and add it to the notification. Only runs after you've accepted the data notice for the current provider."
         }
       }
     },
@@ -379,6 +466,11 @@
           "group": "inline@1"
         },
         {
+          "command": "kafka-manager.askAi",
+          "when": "view == kafkaExplorer && viewItem =~ /^kafkaCluster-/ && kafka-manager.aiEnabled",
+          "group": "4_ai@0"
+        },
+        {
           "command": "kafka-manager.diagnoseWithAi",
           "when": "view == kafkaExplorer && viewItem == kafkaCluster-connected && kafka-manager.aiEnabled",
           "group": "4_ai@1"
@@ -401,6 +493,11 @@
         {
           "command": "kafka-manager.explainTopicWithAi",
           "when": "view == kafkaExplorer && viewItem == kafkaTopic && kafka-manager.aiEnabled",
+          "group": "4_ai@1"
+        },
+        {
+          "command": "kafka-manager.explainBrokerWithAi",
+          "when": "view == kafkaExplorer && viewItem == kafkaBroker && kafka-manager.aiEnabled",
           "group": "4_ai@1"
         }
       ],
@@ -490,7 +587,22 @@
           "when": "false"
         },
         {
+          "command": "kafka-manager.selectAiProvider",
+          "when": "kafka-manager.aiEnabled"
+        },
+        {
           "command": "kafka-manager.selectAiModel",
+          "when": "kafka-manager.aiEnabled"
+        },
+        {
+          "command": "kafka-manager.setAiApiKey",
+          "when": "kafka-manager.aiEnabled"
+        },
+        {
+          "command": "kafka-manager.removeAiApiKey"
+        },
+        {
+          "command": "kafka-manager.signInOpenRouter",
           "when": "kafka-manager.aiEnabled"
         },
         {
@@ -499,6 +611,10 @@
         },
         {
           "command": "kafka-manager.askAi",
+          "when": "kafka-manager.aiEnabled"
+        },
+        {
+          "command": "kafka-manager.showAiModel",
           "when": "kafka-manager.aiEnabled"
         },
         {
@@ -514,12 +630,16 @@
           "when": "false"
         },
         {
+          "command": "kafka-manager.analyzeLag",
+          "when": "false"
+        },
+        {
           "command": "kafka-manager.explainTopicWithAi",
           "when": "false"
         },
         {
-          "command": "kafka-manager.showAiModel",
-          "when": "kafka-manager.aiEnabled"
+          "command": "kafka-manager.explainBrokerWithAi",
+          "when": "false"
         }
       ]
     },
@@ -650,8 +770,24 @@
         "icon": "$(sparkle)"
       },
       {
+        "command": "kafka-manager.selectAiProvider",
+        "title": "Kafka: Select AI Provider…"
+      },
+      {
         "command": "kafka-manager.selectAiModel",
         "title": "Kafka: Select AI Model…"
+      },
+      {
+        "command": "kafka-manager.setAiApiKey",
+        "title": "Kafka: Set AI API Key…"
+      },
+      {
+        "command": "kafka-manager.removeAiApiKey",
+        "title": "Kafka: Remove AI API Key…"
+      },
+      {
+        "command": "kafka-manager.signInOpenRouter",
+        "title": "Kafka: Sign In to OpenRouter…"
       },
       {
         "command": "kafka-manager.showAiModel",
@@ -686,8 +822,18 @@
         "icon": "$(sparkle)"
       },
       {
+        "command": "kafka-manager.analyzeLag",
+        "title": "Ask AI: Analyze Lag Alert",
+        "icon": "$(sparkle)"
+      },
+      {
         "command": "kafka-manager.explainTopicWithAi",
         "title": "Ask AI: Explain Topic",
+        "icon": "$(sparkle)"
+      },
+      {
+        "command": "kafka-manager.explainBrokerWithAi",
+        "title": "Ask AI: Explain Broker Config",
         "icon": "$(sparkle)"
       }
     ],
@@ -695,6 +841,11 @@
       {
         "view": "kafkaExplorer",
         "contents": "No Kafka clusters yet. Add a cluster by entering its bootstrap servers, e.g. `localhost:9092`.\n[Add Cluster](command:kafka-manager.addCluster)\nSupports plaintext, TLS (including client certificates), SASL/PLAIN, SASL/SCRAM and Amazon MSK IAM. Clusters are stored in the [kafka.clusters](command:workbench.action.openSettings?%5B%22kafka.clusters%22%5D) setting, in user or workspace settings; passwords go to VS Code's secret storage."
+      },
+      {
+        "view": "kafkaExplorer",
+        "contents": "Kafka AI explains health, lag, configs and connection errors with Claude, GPT, Gemini, a local Ollama model or GitHub Copilot.\n[Set Up AI](command:kafka-manager.aiSetup)",
+        "when": "kafka-manager.aiEnabled"
       }
     ],
     "chatParticipants": [
@@ -703,7 +854,7 @@
         "name": "kafka",
         "fullName": "Kafka",
         "isSticky": true,
-        "description": "Ask about your Kafka clusters: health, lag, topics and connection errors",
+        "description": "Ask about your Kafka clusters: health, lag, topics and connection errors. Uses your Kafka AI provider (Claude, GPT, Gemini…) or the chat's model.",
         "commands": [
           {
             "name": "diagnose",
@@ -723,6 +874,276 @@
           }
         ]
       }
+    ],
+    "languageModelTools": [
+      {
+        "name": "kafka_listClusters",
+        "displayName": "List Kafka Clusters",
+        "toolReferenceName": "kafka_listClusters",
+        "canBeReferencedInPrompt": true,
+        "icon": "$(database)",
+        "userDescription": "List the Kafka clusters configured in Kafka Manager and whether they are connected.",
+        "modelDescription": "Lists the Apache Kafka clusters configured in Kafka Manager with their connection status and security mode. Call this first to learn cluster names. Other kafka_* tools only work on connected clusters.",
+        "tags": [
+          "kafka",
+          "read-only"
+        ],
+        "when": "kafka-manager.aiEnabled",
+        "inputSchema": {
+          "type": "object",
+          "properties": {}
+        }
+      },
+      {
+        "name": "kafka_clusterOverview",
+        "displayName": "Kafka Cluster Overview",
+        "toolReferenceName": "kafka_clusterOverview",
+        "canBeReferencedInPrompt": true,
+        "icon": "$(database)",
+        "userDescription": "Health of a Kafka cluster: brokers, controller, partition problems and consumer lag.",
+        "modelDescription": "Returns a connected Kafka cluster's health: brokers and controller, under-replicated and offline partitions, topics, and consumer groups sorted by lag. Use for health checks and to find lagging groups.",
+        "tags": [
+          "kafka",
+          "read-only"
+        ],
+        "when": "kafka-manager.aiEnabled",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "cluster": {
+              "type": "string",
+              "description": "Cluster name as shown in Kafka Manager. Optional when only one cluster is connected."
+            }
+          }
+        }
+      },
+      {
+        "name": "kafka_listTopics",
+        "displayName": "List Kafka Topics",
+        "toolReferenceName": "kafka_listTopics",
+        "canBeReferencedInPrompt": true,
+        "icon": "$(database)",
+        "userDescription": "List the topics of a Kafka cluster.",
+        "modelDescription": "Lists the topics of a connected Kafka cluster with partition counts. Optionally filter by a substring of the name.",
+        "tags": [
+          "kafka",
+          "read-only"
+        ],
+        "when": "kafka-manager.aiEnabled",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "cluster": {
+              "type": "string",
+              "description": "Cluster name as shown in Kafka Manager. Optional when only one cluster is connected."
+            },
+            "filter": {
+              "type": "string",
+              "description": "Only topics whose name contains this text (case-insensitive)."
+            }
+          }
+        }
+      },
+      {
+        "name": "kafka_describeTopic",
+        "displayName": "Describe Kafka Topic",
+        "toolReferenceName": "kafka_describeTopic",
+        "canBeReferencedInPrompt": true,
+        "icon": "$(database)",
+        "userDescription": "Partitions, replicas, ISR, message counts and configuration of a topic, with risky settings flagged.",
+        "modelDescription": "Describes one topic of a connected Kafka cluster: partitions with leader, replicas, ISR and message counts; non-default configuration; and Kafka Manager's rule-based risk findings (replication, min.insync.replicas, retention, compaction, leader skew).",
+        "tags": [
+          "kafka",
+          "read-only"
+        ],
+        "when": "kafka-manager.aiEnabled",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "cluster": {
+              "type": "string",
+              "description": "Cluster name as shown in Kafka Manager. Optional when only one cluster is connected."
+            },
+            "topic": {
+              "type": "string",
+              "description": "Topic name."
+            }
+          },
+          "required": [
+            "topic"
+          ]
+        }
+      },
+      {
+        "name": "kafka_listConsumerGroups",
+        "displayName": "List Kafka Consumer Groups",
+        "toolReferenceName": "kafka_listConsumerGroups",
+        "canBeReferencedInPrompt": true,
+        "icon": "$(database)",
+        "userDescription": "List the consumer groups of a Kafka cluster.",
+        "modelDescription": "Lists the consumer group ids of a connected Kafka cluster. Use kafka_clusterOverview for their lag, or kafka_describeConsumerGroup for one group.",
+        "tags": [
+          "kafka",
+          "read-only"
+        ],
+        "when": "kafka-manager.aiEnabled",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "cluster": {
+              "type": "string",
+              "description": "Cluster name as shown in Kafka Manager. Optional when only one cluster is connected."
+            }
+          }
+        }
+      },
+      {
+        "name": "kafka_describeConsumerGroup",
+        "displayName": "Describe Kafka Consumer Group",
+        "toolReferenceName": "kafka_describeConsumerGroup",
+        "canBeReferencedInPrompt": true,
+        "icon": "$(database)",
+        "userDescription": "State, members, partition assignment and lag per partition of a consumer group.",
+        "modelDescription": "Describes one consumer group of a connected Kafka cluster: state, members and which partitions each owns, and committed offset, end offset and lag per partition (most lag first). Use to explain lag.",
+        "tags": [
+          "kafka",
+          "read-only"
+        ],
+        "when": "kafka-manager.aiEnabled",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "cluster": {
+              "type": "string",
+              "description": "Cluster name as shown in Kafka Manager. Optional when only one cluster is connected."
+            },
+            "group": {
+              "type": "string",
+              "description": "Consumer group id."
+            }
+          },
+          "required": [
+            "group"
+          ]
+        }
+      },
+      {
+        "name": "kafka_describeBroker",
+        "displayName": "Describe Kafka Broker",
+        "toolReferenceName": "kafka_describeBroker",
+        "canBeReferencedInPrompt": true,
+        "icon": "$(database)",
+        "userDescription": "A broker's role, rack, partition load and non-default settings, with risky settings flagged.",
+        "modelDescription": "Describes one broker of a connected Kafka cluster: address, controller role, rack, leader and replica counts, non-default settings, and Kafka Manager's rule-based findings. Get broker ids from kafka_clusterOverview.",
+        "tags": [
+          "kafka",
+          "read-only"
+        ],
+        "when": "kafka-manager.aiEnabled",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "cluster": {
+              "type": "string",
+              "description": "Cluster name as shown in Kafka Manager. Optional when only one cluster is connected."
+            },
+            "brokerId": {
+              "type": "integer",
+              "description": "Broker node id."
+            }
+          },
+          "required": [
+            "brokerId"
+          ]
+        }
+      },
+      {
+        "name": "kafka_listAcls",
+        "displayName": "List Kafka ACLs",
+        "toolReferenceName": "kafka_listAcls",
+        "canBeReferencedInPrompt": true,
+        "icon": "$(database)",
+        "userDescription": "The ACLs of a Kafka cluster.",
+        "modelDescription": "Lists the ACLs of a connected Kafka cluster (resource, pattern, principal, host, operation, permission). Use for authorization errors.",
+        "tags": [
+          "kafka",
+          "read-only"
+        ],
+        "when": "kafka-manager.aiEnabled",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "cluster": {
+              "type": "string",
+              "description": "Cluster name as shown in Kafka Manager. Optional when only one cluster is connected."
+            }
+          }
+        }
+      },
+      {
+        "name": "kafka_connectionError",
+        "displayName": "Kafka Connection Error",
+        "toolReferenceName": "kafka_connectionError",
+        "canBeReferencedInPrompt": true,
+        "icon": "$(database)",
+        "userDescription": "Why a Kafka cluster failed to connect: the error chain and Kafka Manager's hint.",
+        "modelDescription": "Returns the last connection error of a Kafka cluster (connected or not): the full cause chain, the security mode (TLS/SASL mechanism, never credentials) and Kafka Manager's rule-based hint. Use when a cluster is in the error state.",
+        "tags": [
+          "kafka",
+          "read-only"
+        ],
+        "when": "kafka-manager.aiEnabled",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "cluster": {
+              "type": "string",
+              "description": "Cluster name as shown in Kafka Manager."
+            }
+          },
+          "required": [
+            "cluster"
+          ]
+        }
+      },
+      {
+        "name": "kafka_peekMessages",
+        "displayName": "Peek Kafka Messages",
+        "toolReferenceName": "kafka_peekMessages",
+        "canBeReferencedInPrompt": true,
+        "icon": "$(database)",
+        "userDescription": "Read the newest few messages of a topic (only with kafka.ai.includeMessagePayloads on).",
+        "modelDescription": "Reads up to 10 of the newest messages of a topic on a connected Kafka cluster, with keys, headers and truncated values. Only works when the user allowed message contents (kafka.ai.includeMessagePayloads).",
+        "tags": [
+          "kafka",
+          "read-only"
+        ],
+        "when": "kafka-manager.aiEnabled",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "cluster": {
+              "type": "string",
+              "description": "Cluster name as shown in Kafka Manager. Optional when only one cluster is connected."
+            },
+            "topic": {
+              "type": "string",
+              "description": "Topic name."
+            },
+            "count": {
+              "type": "integer",
+              "description": "How many messages, 1-10 (default 5)."
+            },
+            "partition": {
+              "type": "integer",
+              "description": "Only this partition."
+            }
+          },
+          "required": [
+            "topic"
+          ]
+        }
+      }
     ]
   },
   "scripts": {
@@ -735,7 +1156,8 @@
     "pretest": "npm run compile-tests && npm run compile && npm run lint",
     "lint": "eslint src",
     "test": "vscode-test",
-    "test:integration": "vscode-test --label integration"
+    "test:integration": "vscode-test --label integration",
+    "ai:eval": "npm run compile-tests && node scripts/ai-eval.mjs"
   },
   "devDependencies": {
     "@types/mocha": "^10.0.9",
@@ -755,5 +1177,17 @@
     "@kafkajs/confluent-schema-registry": "^4.1.0",
     "aws-msk-iam-sasl-signer-js": "^1.0.3",
     "kafkajs": "^2.2.4"
-  }
+  },
+  "keywords": [
+    "kafka",
+    "apache kafka",
+    "msk",
+    "confluent",
+    "consumer lag",
+    "ai",
+    "claude",
+    "gpt",
+    "gemini",
+    "ollama"
+  ]
 }

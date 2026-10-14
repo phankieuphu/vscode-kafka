@@ -6,7 +6,11 @@ import { BrokerPanel } from "./brokerPanel";
 import { watchCluster } from "./clusterWatch";
 import { GroupPanel } from "./groupPanel";
 import { TopicPanel } from "./topicPanel";
-import { baseCss, contentSecurityPolicy, createNonce, escapeHtml, icons, scriptValue, sharedScript } from "./webview";
+import { baseCss, contentSecurityPolicy, createNonce, escapeHtml, icons, markdownCss, scriptValue, sharedScript, sparkleIcon } from "./webview";
+import { renderMarkdown } from "../ai/markdown";
+import { isAiReady, onDidChangeAiAvailability } from "../ai/model";
+import { openAssistant } from "../ai/open";
+import { runInline } from "../ai/inline";
 
 type WebviewInMessage =
   | { command: "refresh" }
@@ -14,7 +18,10 @@ type WebviewInMessage =
   | { command: "showOutput" }
   | { command: "openTopic"; topic: string }
   | { command: "openGroup"; groupId: string }
-  | { command: "openBroker"; nodeId: number };
+  | { command: "openBroker"; nodeId: number }
+  | { command: "aiSummary"; refresh?: boolean }
+  | { command: "aiStop" }
+  | { command: "askAi" };
 
 export interface HealthReport {
   clusterId: string;
@@ -30,11 +37,19 @@ export const onDidReportHealth = healthEmitter.event;
  */
 export class DashboardPanel {
   private static readonly panels = new Map<string, DashboardPanel>();
+  private static state: vscode.Memento | undefined;
+
+  static setState(state: vscode.Memento): void {
+    DashboardPanel.state = state;
+  }
 
   private readonly panel: vscode.WebviewPanel;
   private readonly subscriptions: vscode.Disposable[] = [];
   private disposed = false;
   private loading = false;
+  /** The AI summary, kept for this panel session so reopening it doesn't call the model again. */
+  private summary: { html: string; meta: string } | undefined;
+  private summarizing: vscode.CancellationTokenSource | undefined;
 
   static createOrShow(manager: ClusterManager, cluster: ClusterConfig): void {
     const existing = DashboardPanel.panels.get(cluster.id);
@@ -78,11 +93,67 @@ export class DashboardPanel {
           this.panel.title = `Dashboard: ${updated.name}`;
           this.postConnection();
         },
-      })
+      }),
+      onDidChangeAiAvailability(() => void this.postAi())
     );
 
     this.postConnection();
+    void this.postAi();
     this.load();
+  }
+
+  private async postAi(): Promise<void> {
+    this.post({ command: "ai", available: await isAiReady() });
+  }
+
+  /** Streams a short health summary into the AI card. Never automatic: only on the button. */
+  private async summarize(refresh: boolean): Promise<void> {
+    if (this.summary && !refresh) {
+      this.post({ command: "aiSummary", html: this.summary.html, meta: this.summary.meta, done: true });
+      return;
+    }
+    this.summarizing?.cancel();
+    const source = new vscode.CancellationTokenSource();
+    this.summarizing = source;
+    let markdown = "";
+    let timer: NodeJS.Timeout | undefined;
+    const flush = () => {
+      timer = undefined;
+      this.post({ command: "aiSummary", html: renderMarkdown(markdown), done: false });
+    };
+    this.post({ command: "aiSummary", html: "", done: false });
+    try {
+      const result = await runInline(
+        DashboardPanel.state!,
+        this.manager,
+        { task: "dashboard-summary", prompt: "", clusterId: this.cluster.id },
+        {
+          write: (text) => {
+            markdown += text;
+            timer ??= setTimeout(flush, 80);
+          },
+        },
+        source.token
+      );
+      if (timer) {
+        clearTimeout(timer);
+      }
+      if (!result.ok && !markdown) {
+        this.post({ command: "aiSummary", html: renderMarkdown(result.error ?? "No answer."), done: true, error: true });
+        return;
+      }
+      const html = renderMarkdown(markdown);
+      const meta = `${result.model ?? ""} · ${new Date().toLocaleTimeString()}`;
+      if (result.ok && !source.token.isCancellationRequested) {
+        this.summary = { html, meta };
+      }
+      this.post({ command: "aiSummary", html, meta, done: true, error: !result.ok });
+    } finally {
+      if (this.summarizing === source) {
+        this.summarizing = undefined;
+      }
+      source.dispose();
+    }
   }
 
   private async handleMessage(message: WebviewInMessage): Promise<void> {
@@ -108,6 +179,15 @@ export class DashboardPanel {
         break;
       case "openBroker":
         BrokerPanel.createOrShow(this.manager, this.cluster, message.nodeId);
+        break;
+      case "aiSummary":
+        await this.summarize(!!message.refresh);
+        break;
+      case "aiStop":
+        this.summarizing?.cancel();
+        break;
+      case "askAi":
+        openAssistant(this.manager, this.cluster.id);
         break;
     }
   }
@@ -151,6 +231,7 @@ export class DashboardPanel {
 
   private dispose(): void {
     this.disposed = true;
+    this.summarizing?.cancel();
     DashboardPanel.panels.delete(this.cluster.id);
     for (const subscription of this.subscriptions) {
       subscription.dispose();
@@ -167,6 +248,9 @@ export class DashboardPanel {
 <meta http-equiv="Content-Security-Policy" content="${contentSecurityPolicy(nonce)}" />
 <style>
 ${baseCss}
+${markdownCss}
+  #aiCard .md { font-size: 13px; }
+  #aiCard .section-head { margin-bottom: 2px; }
   .skeleton-tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 8px; }
   .skeleton-tile { height: 70px; border-radius: 4px; background: var(--card); border: 1px solid var(--border); padding: 12px; display: flex; flex-direction: column; gap: 10px; }
   .skeleton-rows { display: flex; flex-direction: column; gap: 12px; padding: 12px; }
@@ -187,6 +271,8 @@ ${baseCss}
         <option value="30">30s</option>
         <option value="60">60s</option>
       </select>
+      <button class="secondary" id="aiSummaryBtn" hidden title="Ask the AI model for a short health summary of this cluster">${sparkleIcon}AI summary</button>
+      <button class="secondary" id="askAiBtn" hidden title="Open the Kafka AI chat for this cluster">${sparkleIcon}Ask AI</button>
       <button id="refreshBtn">${icons.refresh}Refresh</button>
     </div>
   </header>
@@ -225,6 +311,18 @@ ${baseCss}
   </div>
 
   <main id="content" class="stack" hidden>
+    <section class="card" id="aiCard" hidden aria-labelledby="aiTitle" aria-live="polite">
+      <div class="section-head">
+        <h2 id="aiTitle">${sparkleIcon} AI summary</h2>
+        <div class="toolbar">
+          <span class="sub" id="aiMeta"></span>
+          <button class="small secondary" id="aiStopBtn" hidden>Stop</button>
+          <button class="small secondary" id="aiRegenBtn">Regenerate</button>
+          <button class="icon" id="aiCloseBtn" aria-label="Close AI summary" title="Close">${icons.close}</button>
+        </div>
+      </div>
+      <div class="md" id="aiBody"></div>
+    </section>
     <div id="banner" class="banner" role="note"></div>
     <div class="tiles" id="tiles"></div>
 
@@ -536,6 +634,21 @@ ${sharedScript}
     $('unhealthyOnly').addEventListener('change', () => state.overview && renderTopics(state.overview));
     $('groupFilter').addEventListener('input', () => state.overview && renderGroups(state.overview));
 
+    function showAiSummary(m) {
+      $('aiCard').hidden = false;
+      $('aiBody').innerHTML = m.html || '<span class="muted">Thinking…</span>';
+      $('aiCard').classList.toggle('error', !!m.error);
+      $('aiMeta').textContent = m.done ? (m.meta || '') : 'Writing…';
+      $('aiStopBtn').hidden = !!m.done;
+      $('aiRegenBtn').disabled = !m.done;
+      $('aiSummaryBtn').disabled = !m.done;
+    }
+    $('aiSummaryBtn').addEventListener('click', () => vscode.postMessage({ command: 'aiSummary' }));
+    $('aiRegenBtn').addEventListener('click', () => vscode.postMessage({ command: 'aiSummary', refresh: true }));
+    $('aiStopBtn').addEventListener('click', () => vscode.postMessage({ command: 'aiStop' }));
+    $('aiCloseBtn').addEventListener('click', () => { $('aiCard').hidden = true; });
+    $('askAiBtn').addEventListener('click', () => vscode.postMessage({ command: 'askAi' }));
+
     $('autoRefresh').value = String(state.autoRefresh);
     startTimer();
 
@@ -558,6 +671,14 @@ ${sharedScript}
           if (!timer && state.autoRefresh > 0) startTimer();
           setStale(false);
           renderAll();
+          break;
+        case 'ai':
+          $('aiSummaryBtn').hidden = !message.available;
+          $('askAiBtn').hidden = !message.available;
+          if (!message.available) $('aiCard').hidden = true;
+          break;
+        case 'aiSummary':
+          showAiSummary(message);
           break;
         case 'failed':
           state.failures += 1;

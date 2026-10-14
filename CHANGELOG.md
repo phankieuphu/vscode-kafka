@@ -6,6 +6,26 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 
 ## [Unreleased]
 
+### Added
+
+- **Kafka AI** with any provider, without depending on GitHub Copilot (#52, #61): Anthropic Claude, OpenAI GPT, Google Gemini, OpenRouter, Azure OpenAI, Mistral, xAI Grok, DeepSeek, Groq, Ollama and LM Studio (local), any OpenAI-compatible endpoint, or VS Code language models (GitHub Copilot and other chat extensions). **Kafka: AI Setup…** walks through provider, key and model; models are listed live from the provider with a recommended default
+- API keys are kept in VS Code's secret storage (OS keychain) and checked before saving; environment variables such as `ANTHROPIC_API_KEY` work too. **Sign in to OpenRouter** in the browser (OAuth PKCE) instead of pasting a key
+- **Kafka AI chat panel** per cluster, with quick actions, streaming answers, the data used shown as tables, follow-up action buttons, Stop and Clear (#64)
+- **`@kafka`** chat participant with `/diagnose`, `/lag`, `/explain-error` and `/topic`, using the Kafka AI provider or the chat's own model (#56)
+- Read-only **Language Model Tools** (`#kafka_clusterOverview`, `#kafka_describeConsumerGroup`, `#kafka_describeTopic`, …) for Copilot agent mode, also used by Kafka AI's own agent loop with Claude, GPT and Gemini (#55)
+- Context builders for clusters, groups, topics, brokers, ACLs, connection errors (full cause chain) and messages, shared by every prompt (#53)
+- **Explain with AI** on connection failures and on clusters in the error state (#54)
+- Lag alerts keep the last 30 readings per watched group, detect a stuck partition, consumers down, rebalancing, a producer burst or consumers falling behind, say so in the alert, and offer **Analyze**; optional one-line AI cause with `kafka.ai.autoAnalyzeLagAlerts` (#57)
+- Topic panel: explain a message or why it couldn't be decoded, and **Infer schema** (JSON Schema, Avro and a produce template) from loaded messages (#58)
+- Dashboard **AI summary** card; **Explain config** for topics and brokers, backed by rule-based checks for risky settings (#59)
+- Settings `kafka.ai.provider`, `kafka.ai.model`, `kafka.ai.baseUrl`, `kafka.ai.maxOutputTokens`, `kafka.ai.chatLocation`, `kafka.ai.autoAnalyzeLagAlerts`, alongside `kafka.ai.enabled`, `kafka.ai.includeMessagePayloads` and `kafka.ai.maskHosts`
+- README section on AI assistance and exactly what data leaves the machine; prompt regression tests from recorded cluster data, and `npm run ai:eval` for maintainers to try every prompt against a live model (#60)
+
+### Security
+
+- Passwords, SASL usernames, Schema Registry credentials, API keys, AWS keys, certificate paths and `sasl.jaas.config` values are stripped from everything sent to a model, including tool results and message contents
+- The data notice is shown per provider; AI is off in untrusted workspaces; `kafka.ai.provider` and `kafka.ai.baseUrl` are user-only settings, and endpoints must use HTTPS (plain HTTP only to localhost)
+
 ## [0.3.0] - 2026-10-12
 
 ### Added

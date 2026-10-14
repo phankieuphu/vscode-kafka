@@ -3,9 +3,16 @@ import { ClusterConfig } from "./types";
 
 const EDIT_SECURITY = "Use “Edit Connection Security” on the cluster to change it.";
 
+export interface ErrorLink {
+  name: string;
+  message: string;
+  code?: string;
+  broker?: string;
+}
+
 /** Walks `error.cause` (KafkaJS nests the real failure under retries/non-retriable wrappers). */
-function errorChain(error: unknown): Array<{ name: string; message: string; code?: string; broker?: string }> {
-  const chain = [];
+export function errorChain(error: unknown): ErrorLink[] {
+  const chain: ErrorLink[] = [];
   const seen = new Set<unknown>();
   let current: unknown = error;
   while (current instanceof Error && !seen.has(current)) {
