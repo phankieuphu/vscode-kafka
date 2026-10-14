@@ -402,6 +402,15 @@ export class ClusterManager implements vscode.Disposable {
     return password;
   }
 
+  /** Saved SASL and Schema Registry passwords, without prompting; for redaction. */
+  async getStoredSecrets(id: string): Promise<string[]> {
+    const values = await Promise.all([
+      this.secrets?.get(PASSWORD_SECRET_PREFIX + id),
+      this.secrets?.get(REGISTRY_SECRET_PREFIX + id),
+    ]);
+    return values.filter((v): v is string => !!v);
+  }
+
   async updateClusterName(
     id: string,
     name: string,

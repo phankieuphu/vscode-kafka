@@ -179,6 +179,26 @@
           "default": 60,
           "minimum": 10,
           "description": "How often watched consumer groups' lag is checked, in seconds."
+        },
+        "kafka.ai.enabled": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "Enable AI features (explanations, `@kafka` chat, tools). They use the chat model you already have in VS Code, such as GitHub Copilot, and are always off in untrusted workspaces. Run **Kafka: AI Setup…** to see the status and change these settings."
+        },
+        "kafka.ai.modelFamily": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "Chat model family to use, e.g. `gpt-4o` or `claude-sonnet-4`. Leave empty to use any available model."
+        },
+        "kafka.ai.includeMessagePayloads": {
+          "type": "boolean",
+          "default": false,
+          "markdownDescription": "Send message keys and values (truncated) to the chat model. Off by default: only metadata such as topic names, offsets and configs is sent."
+        },
+        "kafka.ai.maskHosts": {
+          "type": "boolean",
+          "default": false,
+          "markdownDescription": "Replace broker and Schema Registry hostnames with placeholders before sending context to the chat model."
         }
       }
     },
@@ -210,6 +230,16 @@
           "command": "kafka-manager.refresh",
           "when": "view == kafkaExplorer",
           "group": "navigation@2"
+        },
+        {
+          "command": "kafka-manager.askAi",
+          "when": "view == kafkaExplorer && kafka-manager.aiEnabled",
+          "group": "navigation@3"
+        },
+        {
+          "command": "kafka-manager.aiSetup",
+          "when": "view == kafkaExplorer",
+          "group": "9_ai@1"
         }
       ],
       "view/item/context": [
@@ -347,6 +377,31 @@
           "command": "kafka-manager.viewBroker",
           "when": "view == kafkaExplorer && viewItem == kafkaBroker",
           "group": "inline@1"
+        },
+        {
+          "command": "kafka-manager.diagnoseWithAi",
+          "when": "view == kafkaExplorer && viewItem == kafkaCluster-connected && kafka-manager.aiEnabled",
+          "group": "4_ai@1"
+        },
+        {
+          "command": "kafka-manager.explainErrorWithAi",
+          "when": "view == kafkaExplorer && viewItem == kafkaCluster-error && kafka-manager.aiEnabled",
+          "group": "inline@3"
+        },
+        {
+          "command": "kafka-manager.explainErrorWithAi",
+          "when": "view == kafkaExplorer && viewItem == kafkaCluster-error && kafka-manager.aiEnabled",
+          "group": "4_ai@1"
+        },
+        {
+          "command": "kafka-manager.explainLagWithAi",
+          "when": "view == kafkaExplorer && viewItem =~ /^kafkaGroup(-watched)?$/ && kafka-manager.aiEnabled",
+          "group": "4_ai@1"
+        },
+        {
+          "command": "kafka-manager.explainTopicWithAi",
+          "when": "view == kafkaExplorer && viewItem == kafkaTopic && kafka-manager.aiEnabled",
+          "group": "4_ai@1"
         }
       ],
       "commandPalette": [
@@ -433,6 +488,38 @@
         {
           "command": "kafka-manager.configureSchemaRegistry",
           "when": "false"
+        },
+        {
+          "command": "kafka-manager.selectAiModel",
+          "when": "kafka-manager.aiEnabled"
+        },
+        {
+          "command": "kafka-manager.testAi",
+          "when": "kafka-manager.aiEnabled"
+        },
+        {
+          "command": "kafka-manager.askAi",
+          "when": "kafka-manager.aiEnabled"
+        },
+        {
+          "command": "kafka-manager.diagnoseWithAi",
+          "when": "false"
+        },
+        {
+          "command": "kafka-manager.explainErrorWithAi",
+          "when": "false"
+        },
+        {
+          "command": "kafka-manager.explainLagWithAi",
+          "when": "false"
+        },
+        {
+          "command": "kafka-manager.explainTopicWithAi",
+          "when": "false"
+        },
+        {
+          "command": "kafka-manager.showAiModel",
+          "when": "kafka-manager.aiEnabled"
         }
       ]
     },
@@ -556,12 +643,85 @@
       {
         "command": "kafka-manager.configureSchemaRegistry",
         "title": "Kafka: Configure Schema Registry…"
+      },
+      {
+        "command": "kafka-manager.aiSetup",
+        "title": "Kafka: AI Setup…",
+        "icon": "$(sparkle)"
+      },
+      {
+        "command": "kafka-manager.selectAiModel",
+        "title": "Kafka: Select AI Model…"
+      },
+      {
+        "command": "kafka-manager.showAiModel",
+        "title": "Kafka: Show Current AI Model"
+      },
+      {
+        "command": "kafka-manager.testAi",
+        "title": "Kafka: Test AI Model"
+      },
+      {
+        "command": "kafka-manager.showAiOutput",
+        "title": "Kafka: Show AI Output"
+      },
+      {
+        "command": "kafka-manager.askAi",
+        "title": "Kafka: Ask AI…",
+        "icon": "$(sparkle)"
+      },
+      {
+        "command": "kafka-manager.diagnoseWithAi",
+        "title": "Ask AI: Health Check",
+        "icon": "$(sparkle)"
+      },
+      {
+        "command": "kafka-manager.explainErrorWithAi",
+        "title": "Ask AI: Why Did This Fail?",
+        "icon": "$(sparkle)"
+      },
+      {
+        "command": "kafka-manager.explainLagWithAi",
+        "title": "Ask AI: Explain Lag",
+        "icon": "$(sparkle)"
+      },
+      {
+        "command": "kafka-manager.explainTopicWithAi",
+        "title": "Ask AI: Explain Topic",
+        "icon": "$(sparkle)"
       }
     ],
     "viewsWelcome": [
       {
         "view": "kafkaExplorer",
         "contents": "No Kafka clusters yet. Add a cluster by entering its bootstrap servers, e.g. `localhost:9092`.\n[Add Cluster](command:kafka-manager.addCluster)\nSupports plaintext, TLS (including client certificates), SASL/PLAIN, SASL/SCRAM and Amazon MSK IAM. Clusters are stored in the [kafka.clusters](command:workbench.action.openSettings?%5B%22kafka.clusters%22%5D) setting, in user or workspace settings; passwords go to VS Code's secret storage."
+      }
+    ],
+    "chatParticipants": [
+      {
+        "id": "kafka-manager.kafka",
+        "name": "kafka",
+        "fullName": "Kafka",
+        "isSticky": true,
+        "description": "Ask about your Kafka clusters: health, lag, topics and connection errors",
+        "commands": [
+          {
+            "name": "diagnose",
+            "description": "Health check a cluster: partitions, brokers, groups and lag"
+          },
+          {
+            "name": "lag",
+            "description": "Explain a consumer group's lag, e.g. /lag orders-consumer"
+          },
+          {
+            "name": "explain-error",
+            "description": "Explain why a cluster failed to connect"
+          },
+          {
+            "name": "topic",
+            "description": "Explain a topic's layout and risky configs, e.g. /topic orders"
+          }
+        ]
       }
     ]
   },

@@ -21,6 +21,10 @@ import { BrokerPanel } from "./panels/brokerPanel";
 import { AclPanel } from "./panels/aclPanel";
 import { parseBrokers, validateBrokers } from "./kafka/brokers";
 import { KafkaStatusBar } from "./statusBar";
+import { registerAiContext } from "./ai/settings";
+import { aiOutputChannel, disposeAiOutputChannel } from "./ai/stream";
+import { pickAiModel, showAiSetup, showCurrentAiModel, testAiModel } from "./ai/setup";
+import { openKafkaChat, registerKafkaChat } from "./ai/chat";
 
 const EDIT_SECURITY = "Edit Connection Security";
 
@@ -54,6 +58,8 @@ export function activate(context: vscode.ExtensionContext): void {
 
   context.subscriptions.push(
     manager,
+    registerAiContext(),
+    { dispose: disposeAiOutputChannel },
     new KafkaStatusBar(manager),
     new LagMonitor(manager),
     vscode.window.registerTreeDataProvider("kafkaExplorer", treeProvider),
@@ -746,6 +752,26 @@ export function activate(context: vscode.ExtensionContext): void {
 
     vscode.commands.registerCommand("kafka-manager.showOutput", () =>
       manager.showOutput(),
+    ),
+
+    vscode.commands.registerCommand("kafka-manager.aiSetup", () => showAiSetup(context.globalState)),
+    vscode.commands.registerCommand("kafka-manager.selectAiModel", () => pickAiModel()),
+    vscode.commands.registerCommand("kafka-manager.showAiModel", () => showCurrentAiModel()),
+    vscode.commands.registerCommand("kafka-manager.testAi", () => testAiModel(context.globalState)),
+    vscode.commands.registerCommand("kafka-manager.showAiOutput", () => aiOutputChannel().show()),
+    registerKafkaChat(context, manager),
+    vscode.commands.registerCommand("kafka-manager.askAi", () => openKafkaChat()),
+    vscode.commands.registerCommand("kafka-manager.diagnoseWithAi", (item: ClusterTreeItem) =>
+      openKafkaChat(`/diagnose ${item.cluster.name}`, true),
+    ),
+    vscode.commands.registerCommand("kafka-manager.explainErrorWithAi", (item: ClusterTreeItem) =>
+      openKafkaChat(`/explain-error ${item.cluster.name}`, true),
+    ),
+    vscode.commands.registerCommand("kafka-manager.explainLagWithAi", (item: GroupTreeItem) =>
+      openKafkaChat(`/lag ${item.cluster.name} ${item.group.groupId}`, true),
+    ),
+    vscode.commands.registerCommand("kafka-manager.explainTopicWithAi", (item: TopicTreeItem) =>
+      openKafkaChat(`/topic ${item.cluster.name} ${item.topic.name}`, true),
     ),
 
     vscode.commands.registerCommand(
