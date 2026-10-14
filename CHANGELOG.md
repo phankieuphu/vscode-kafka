@@ -21,6 +21,7 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 - Topic panel: explain a message or why it couldn't be decoded, and **Infer schema** (JSON Schema, Avro and a produce template) from loaded messages (#58)
 - Dashboard **AI summary** card; **Explain config** for topics and brokers, backed by rule-based checks for risky settings (#59)
 - Settings `kafka.ai.provider`, `kafka.ai.model`, `kafka.ai.baseUrl`, `kafka.ai.maxOutputTokens`, `kafka.ai.chatLocation`, `kafka.ai.autoAnalyzeLagAlerts`, alongside `kafka.ai.enabled`, `kafka.ai.includeMessagePayloads` and `kafka.ai.maskHosts`
+- Requests that fail because a provider is overloaded or rate-limited (429, 5xx, e.g. Gemini's 503 "high demand") are retried up to 3 times with backoff, honouring `Retry-After`; if it still fails, the message says it's on the provider's side and suggests another model
 - README section on AI assistance and exactly what data leaves the machine; prompt regression tests from recorded cluster data, and `npm run ai:eval` for maintainers to try every prompt against a live model (#60)
 
 ### Security

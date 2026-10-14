@@ -2,7 +2,7 @@ import * as assert from 'assert';
 import { anthropicBody, AnthropicStreamDecoder } from '../ai/providers/anthropic';
 import { getProvider, keyMismatch, pickDefaultModel, PROVIDERS, validateBaseUrl, chatModels } from '../ai/providers/catalog';
 import { geminiBody, GeminiStreamDecoder, geminiSchema } from '../ai/providers/gemini';
-import { httpError, setFetch, FetchLike } from '../ai/providers/http';
+import { httpError, retryAfterMs, setFetch, setRetryDelays, FetchLike } from '../ai/providers/http';
 import { createHttpModel } from '../ai/providers/httpModel';
 import { openAiBody, openAiHeaders, OpenAiStreamDecoder } from '../ai/providers/openai';
 import { parseSse } from '../ai/providers/sse';
@@ -243,5 +243,71 @@ suite('HTTP models end to end (fake fetch)', () => {
 		setFetch(respond('{"error":{"message":"Incorrect API key"}}', 401));
 		const model = createHttpModel({ provider: getProvider('openai')!, key: 'sk-bad', model: 'gpt-x' });
 		await assert.rejects(collect(model.stream({ system: 's', messages: [] }, NEVER_CANCELLED)), (e: any) => e.kind === 'auth' && /Incorrect API key/.test(e.message));
+	});
+});
+
+suite('Retries on transient provider errors', () => {
+	const GEMINI_503 = '{"error":{"code":503,"message":"This model is currently experiencing high demand. Spikes in demand are usually temporary. Please try again later.","status":"UNAVAILABLE"}}';
+	const OK = 'data: {"candidates":[{"content":{"parts":[{"text":"recovered"}]}}]}\n\n';
+	let calls = 0;
+	/** Answers with each status in turn, then 200. */
+	const sequence = (statuses: number[]): FetchLike => async () => {
+		const status = statuses[calls++] ?? 200;
+		const text = status === 200 ? OK : status === 401 ? '{"error":{"message":"API key not valid"}}' : GEMINI_503;
+		return { ok: status < 300, status, statusText: '', text: async () => text, body: chunks(text), headers: { get: () => null } };
+	};
+	const gemini = () => createHttpModel({ provider: getProvider('gemini')!, key: 'AIzaK', model: 'gemini-3.8-flash' });
+	setup(() => {
+		calls = 0;
+		setRetryDelays([0, 0, 0]);
+	});
+	teardown(() => {
+		setFetch(undefined);
+		setRetryDelays([1000, 3000, 7000]);
+	});
+
+	test('a 503 "high demand" that clears up is retried and the answer arrives', async () => {
+		setFetch(sequence([503, 503]));
+		const events = await collect(gemini().stream({ system: 's', messages: [] }, NEVER_CANCELLED));
+		assert.deepStrictEqual(events, [{ type: 'text', text: 'recovered' }]);
+		assert.strictEqual(calls, 3);
+	});
+
+	test('still overloaded after every retry: says so, with the provider text and what to do', async () => {
+		setFetch(sequence([503, 503, 503, 503, 503]));
+		await assert.rejects(collect(gemini().stream({ system: 's', messages: [] }, NEVER_CANCELLED)), (e: any) => {
+			assert.strictEqual(e.kind, 'server');
+			assert.match(e.message, /Google Gemini is overloaded right now \(503\), even after 4 tries/);
+			assert.match(e.message, /Select AI Model/);
+			assert.match(e.message, /high demand/);
+			return true;
+		});
+		assert.strictEqual(calls, 4);
+	});
+
+	test('errors that retrying cannot fix are not retried', async () => {
+		setFetch(sequence([401]));
+		await assert.rejects(collect(gemini().stream({ system: 's', messages: [] }, NEVER_CANCELLED)), (e: any) => e.kind === 'auth');
+		assert.strictEqual(calls, 1);
+	});
+
+	test('cancelling while waiting stops the retries', async () => {
+		setRetryDelays([60_000]);
+		setFetch(sequence([503]));
+		let cancel: () => void = () => undefined;
+		const token = { isCancellationRequested: false, onCancellationRequested: (l: () => void) => { cancel = () => { token.isCancellationRequested = true; l(); }; return { dispose() {} }; } };
+		const pending = collect(gemini().stream({ system: 's', messages: [] }, token));
+		setTimeout(() => cancel(), 20);
+		await assert.rejects(pending, (e: any) => e.kind === 'cancelled');
+		assert.strictEqual(calls, 1);
+	});
+
+	test('Retry-After in seconds or as a date; too long or invalid is ignored', () => {
+		assert.strictEqual(retryAfterMs('2'), 2000);
+		assert.strictEqual(retryAfterMs(null), undefined);
+		assert.strictEqual(retryAfterMs('3600'), undefined);
+		assert.strictEqual(retryAfterMs('soon'), undefined);
+		const at = retryAfterMs(new Date(Date.now() + 5000).toUTCString())!;
+		assert.ok(at > 3000 && at <= 5000);
 	});
 });

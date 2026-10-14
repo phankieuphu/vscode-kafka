@@ -8,6 +8,7 @@ export type FetchLike = (url: string, init: { method: string; headers: Record<st
   statusText: string;
   text(): Promise<string>;
   body: AsyncIterable<Uint8Array> | null;
+  headers?: { get(name: string): string | null };
 }>;
 
 let fetchImpl: FetchLike | undefined;
@@ -25,6 +26,40 @@ function doFetch(...args: Parameters<FetchLike>): ReturnType<FetchLike> {
 }
 
 const REQUEST_TIMEOUT_MS = 120_000;
+
+/** Statuses worth retrying: rate limits, overloaded or briefly unavailable servers (529 = Anthropic overloaded). */
+const RETRYABLE = new Set([429, 500, 502, 503, 504, 529]);
+/** Waits before each retry; the server's Retry-After wins when it is sooner than 20 s. */
+let retryDelaysMs = [1_000, 3_000, 7_000];
+const MAX_RETRY_AFTER_MS = 20_000;
+
+/** Overrides the retry waits (tests). */
+export function setRetryDelays(delays: number[]): void {
+  retryDelaysMs = delays;
+}
+
+/** How long a Retry-After header asks to wait, in ms, if it is usable. */
+export function retryAfterMs(value: string | null | undefined): number | undefined {
+  if (!value) {
+    return undefined;
+  }
+  const seconds = Number(value);
+  const ms = Number.isFinite(seconds) ? seconds * 1000 : Date.parse(value) - Date.now();
+  return Number.isFinite(ms) && ms >= 0 && ms <= MAX_RETRY_AFTER_MS ? ms : undefined;
+}
+
+function sleep(ms: number, token: CancellationLike): Promise<void> {
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => {
+      listener.dispose();
+      resolve();
+    }, ms);
+    const listener = token.onCancellationRequested(() => {
+      clearTimeout(timer);
+      resolve();
+    });
+  });
+}
 
 /** Aborts on cancellation, or if no response starts within `timeoutMs` (a streaming answer may then take as long as it needs). */
 function linkCancellation(
@@ -66,7 +101,9 @@ export function providerMessage(body: string): string | undefined {
 }
 
 /** Turns an HTTP failure into an error a user can act on. */
-export function httpError(status: number, statusText: string, body: string, providerLabel: string): AiProviderError {
+const retried = (attempts: number) => (attempts > 1 ? `, even after ${attempts} tries` : "");
+
+export function httpError(status: number, statusText: string, body: string, providerLabel: string, attempts = 1): AiProviderError {
   const detail = providerMessage(body);
   const suffix = detail ? ` (${detail})` : "";
   let kind: AiErrorKind;
@@ -82,13 +119,16 @@ export function httpError(status: number, statusText: string, body: string, prov
     message = `${providerLabel} doesn't know this model or endpoint. Pick another model with “Kafka: Select AI Model…”.${suffix}`;
   } else if (status === 429) {
     kind = "rateLimit";
-    message = `${providerLabel} rate limit or quota reached. Wait a moment, or check your plan.${suffix}`;
+    message = `${providerLabel} rate limit or quota reached${retried(attempts)}. Wait a minute, or check your plan's quota (free tiers have per-minute and per-day limits).${suffix}`;
   } else if (status === 400 || status === 422) {
     kind = "badRequest";
     message = `${providerLabel} couldn't handle the request.${suffix}`;
+  } else if (status === 503 || status === 529) {
+    kind = "server";
+    message = `${providerLabel} is overloaded right now (${status})${retried(attempts)}. This is on the provider's side and usually passes within minutes: try again shortly, or pick another model with “Kafka: Select AI Model…”.${suffix}`;
   } else if (status >= 500) {
     kind = "server";
-    message = `${providerLabel} had a server error (${status}). Try again shortly.${suffix}`;
+    message = `${providerLabel} had a server error (${status})${retried(attempts)}. Try again shortly.${suffix}`;
   } else {
     kind = "other";
     message = `${providerLabel} answered ${status} ${statusText}.${suffix}`;
@@ -130,6 +170,42 @@ async function send(
   providerLabel: string,
   token: CancellationLike,
 ): Promise<{ response: Awaited<ReturnType<FetchLike>>; done(): void }> {
+  // Retrying is safe: it happens before any of the answer has been read.
+  for (let attempt = 1; ; attempt++) {
+    try {
+      return await sendOnce(method, url, headers, body, providerLabel, token, attempt);
+    } catch (error) {
+      const retry = error instanceof RetryableError && attempt <= retryDelaysMs.length && !token.isCancellationRequested;
+      if (!retry) {
+        throw error instanceof RetryableError ? error.final : error;
+      }
+      await sleep(error.waitMs ?? retryDelaysMs[attempt - 1], token);
+      if (token.isCancellationRequested) {
+        throw new AiProviderError("Cancelled.", "cancelled");
+      }
+    }
+  }
+}
+
+/** A retryable HTTP failure, with the error to report if no retry is left. */
+class RetryableError extends Error {
+  constructor(
+    readonly final: AiProviderError,
+    readonly waitMs: number | undefined,
+  ) {
+    super(final.message);
+  }
+}
+
+async function sendOnce(
+  method: string,
+  url: string,
+  headers: Record<string, string>,
+  body: unknown,
+  providerLabel: string,
+  token: CancellationLike,
+  attempt: number,
+): Promise<{ response: Awaited<ReturnType<FetchLike>>; done(): void }> {
   const link = linkCancellation(token, REQUEST_TIMEOUT_MS);
   let response: Awaited<ReturnType<FetchLike>>;
   try {
@@ -150,7 +226,11 @@ async function send(
   if (!response.ok) {
     const text = await response.text().catch(() => "");
     link.dispose();
-    throw httpError(response.status, response.statusText, text, providerLabel);
+    const error = httpError(response.status, response.statusText, text, providerLabel, attempt);
+    if (RETRYABLE.has(response.status)) {
+      throw new RetryableError(error, retryAfterMs(response.headers?.get("retry-after")));
+    }
+    throw error;
   }
   return { response, done: () => link.dispose() };
 }
