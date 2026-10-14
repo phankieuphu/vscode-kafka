@@ -3,7 +3,7 @@
   "displayName": "Kafka Manager",
   "description": "Manage Apache Kafka clusters from VS Code: browse topics and partitions, inspect consumer groups and lag, produce/tail messages, and explain problems with AI (Claude, GPT, Gemini, Ollama or Copilot).",
   "publisher": "PatrickPhan",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "icon": "resources/icon.png",
   "license": "MIT",
   "repository": {

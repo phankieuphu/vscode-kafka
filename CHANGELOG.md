@@ -6,6 +6,8 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-10-15
+
 ### Added
 
 - **Kafka AI** with any provider, without depending on GitHub Copilot (#52, #61): Anthropic Claude, OpenAI GPT, Google Gemini, OpenRouter, Azure OpenAI, Mistral, xAI Grok, DeepSeek, Groq, Ollama and LM Studio (local), any OpenAI-compatible endpoint, or VS Code language models (GitHub Copilot and other chat extensions). **Kafka: AI Setup…** walks through provider, key and model; models are listed live from the provider with a recommended default
