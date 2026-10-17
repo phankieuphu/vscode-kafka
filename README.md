@@ -16,6 +16,7 @@ Manage Apache Kafka clusters directly from VS Code: connect to one or more clust
 - **Brokers and ACLs** — the **Brokers** node lists each broker with its leader/replica counts; click one (or a broker row on the dashboard) for its settings and their source. **ACLs** shows a read-only list filterable by principal, resource and type.
 - **Consumer group panel** — state, members with their assigned partitions, and lag per partition (counting only retained messages when nothing is committed, and never negative). **Reset Offsets…** moves a topic to earliest, latest, a timestamp, or shifts by N, with a preview of partitions changed and messages skipped or replayed; it's blocked while the group has active members.
 - **Topic management** — create and delete topics from the tree's context menu.
+- **Kafka AI** — ask about your clusters in plain language with **Claude, GPT, Gemini**, OpenRouter, Mistral, Groq, DeepSeek, xAI, Azure OpenAI, a local **Ollama** / LM Studio model, or GitHub Copilot. Explain connection failures, lag alerts, topic and broker configs, messages and decode errors; infer a schema; get a dashboard health summary. Read-only, and secrets never leave VS Code. See [AI assistance](#ai-assistance).
 
 ## Screenshots
 
@@ -40,6 +41,55 @@ Browse the newest messages or live-tail new ones, inspect a message's key, heade
 Members and their assigned partitions, lag per partition, and a Reset Offsets panel that previews the change before applying it.
 
 ![Consumer group panel](docs/images/consumer-group.png)
+
+## AI assistance
+
+![Kafka AI chat panel](docs/images/ai-chat-panel.png)
+
+Kafka Manager can explain what it reads from your cluster using an AI model **you** choose. It doesn't depend on GitHub Copilot: bring your own API key, sign in with OpenRouter, run a model locally, or use the chat models you already have in VS Code.
+
+### Set up a provider
+
+Run **Kafka: AI Setup…** (the ✨ icon on the Kafka view) and pick a provider:
+
+| Provider | How you sign in | Notes |
+| --- | --- | --- |
+| **Anthropic Claude** | API key ([console.anthropic.com](https://console.anthropic.com/settings/keys)) | Recommended model: the latest Sonnet |
+| **OpenAI GPT** | API key ([platform.openai.com](https://platform.openai.com/api-keys)) | |
+| **Google Gemini** | API key ([aistudio.google.com](https://aistudio.google.com/apikey)) | Has a free tier |
+| **OpenRouter** | **Sign in with your browser** (OAuth), or an API key | One account for Claude, GPT, Gemini, Llama, Mistral… |
+| **VS Code language models** | Handled by VS Code (e.g. GitHub Copilot) | Any installed chat model extension |
+| **Ollama** / **LM Studio** | Nothing: runs on this machine | Data never leaves your computer |
+| Azure OpenAI, Mistral, xAI Grok, DeepSeek, Groq | API key | Azure needs your endpoint URL |
+| Custom OpenAI-compatible | Optional key + endpoint URL | LiteLLM, vLLM, a company gateway… |
+
+- **API keys** are stored in VS Code's secret storage (your OS keychain), never in settings files. Kafka Manager checks a key against the provider before saving it. Keys in the usual environment variables (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GEMINI_API_KEY`, `OPENROUTER_API_KEY`…) are picked up too. **Kafka: Remove AI API Key…** deletes one.
+- **OpenRouter sign-in** opens openrouter.ai in your browser; approve Kafka Manager there and a key is created and stored for you (OAuth PKCE with a one-time `localhost` callback, or a code to paste in remote setups).
+- **Models** are listed live from the provider, so new models show up without an update. Leave the model on *Recommended* to follow the provider's current mid-range model, or pin one with **Kafka: Select AI Model…**.
+- With `kafka.ai.provider` on **Auto** (the default), Kafka Manager uses the first provider you've added a key for, else VS Code's chat models.
+
+### What it does
+
+- **Kafka AI panel**: **Ask AI** on the Kafka view, a cluster, the dashboard or a consumer group opens a chat for that cluster, with quick actions (*Health check*, *Explain lag*, *Explain topic*, *Why did this fail?*), the data it used as tables next to the answer, and buttons for the follow-up action (View Group, Reset Offsets…, Edit Connection Security…). For free-form questions the model can look things up itself with the read-only Kafka tools below.
+- **`@kafka` in the Chat view** with `/diagnose`, `/lag`, `/explain-error` and `/topic`. Set `kafka.ai.chatLocation` to `chatView` to make **Ask AI** open there instead of the panel.
+- **Explain with AI** on a connection failure, and **Ask AI: Why Did This Fail?** on a cluster in the error state.
+- **Lag alerts**: Kafka Manager keeps the last 30 readings of each watched group (in memory) and spots a stuck partition, consumers that are down, a rebalance, a producer burst or consumers falling behind — without any AI. The alert says what it found; **Analyze** asks the model for the cause and next steps. `kafka.ai.autoAnalyzeLagAlerts` adds a one-line AI cause to the notification itself.
+- **Dashboard**: an **AI summary** card with the top risks (only when you click it; cached while the dashboard is open).
+- **Topic panel**: **Explain config** (with Kafka Manager's own checks for risky settings such as `min.insync.replicas` ≥ replication factor, replication factor 1, unbounded retention, compaction without keys and leader skew), and ✨ on a message to explain it or why it couldn't be decoded. **Infer schema** proposes a JSON Schema, an Avro schema and a produce template from the loaded messages.
+- **Broker panel**: **Explain config**.
+- **Tools for agent mode**: `#kafka_listClusters`, `#kafka_clusterOverview`, `#kafka_listTopics`, `#kafka_describeTopic`, `#kafka_listConsumerGroups`, `#kafka_describeConsumerGroup`, `#kafka_describeBroker`, `#kafka_listAcls`, `#kafka_connectionError` and `#kafka_peekMessages`, usable by Copilot agent mode or any tool-calling chat in VS Code.
+
+### Privacy: what leaves your machine
+
+The first time you use AI with a provider, Kafka Manager shows exactly what is sent and where, and asks you to confirm. Switching to another provider asks again.
+
+- **Sent**: cluster, topic, consumer group and broker names; partition, offset and lag figures; configs; error messages; and your question.
+- **Never sent**: passwords, SASL usernames, Schema Registry credentials, API keys, AWS keys, certificate and key file paths, and `sasl.jaas.config` values. These are stripped from everything, including tool results and message contents.
+- **Message keys, headers and values** are only sent if you turn on `kafka.ai.includeMessagePayloads` (Kafka Manager asks the first time you use Explain message or Infer schema), and are truncated.
+- **Hostnames** of brokers and the Schema Registry are replaced with `host-1`, `host-2`… with `kafka.ai.maskHosts`.
+- **Local models** (Ollama, LM Studio) keep everything on your computer.
+- **The AI never changes your cluster.** Every tool is read-only; actions are buttons you click yourself.
+- AI is off in untrusted workspaces, and `kafka.ai.provider` / `kafka.ai.baseUrl` can only be set in user settings, so a repository can't redirect your API key. Turn every AI feature off with `kafka.ai.enabled`.
 
 ## Requirements
 
@@ -92,6 +142,15 @@ When a connection fails, the error includes a hint about the likely cause. Commo
   `ssl` is `true`, or an object with any of `caFile` (private CA), `certFile` + `keyFile` (client certificate for mutual TLS; the key must not be passphrase-protected) and `rejectUnauthorized: false` (dev only). `sasl.mechanism` is one of `plain`, `scram-sha-256`, `scram-sha-512` (with `username`) or `aws-iam` (with `region` and optional `profile`). `schemaRegistry` is `{ "url": "http://localhost:8081", "username"?: "…" }`.
 * `kafka.lagAlerts`: array of `{ cluster, group, threshold }` (cluster id or name). Managed with **Watch Lag…** / **Stop Watching Lag** on a consumer group.
 * `kafka.lagAlertIntervalSeconds`: how often watched groups are checked (default 60, minimum 10).
+* `kafka.ai.enabled`: turn every AI feature on or off (default on; always off in untrusted workspaces).
+* `kafka.ai.provider`: `auto` (default), `anthropic`, `openai`, `gemini`, `openrouter`, `vscode`, `azureOpenai`, `mistral`, `xai`, `deepseek`, `groq`, `ollama`, `lmstudio` or `custom`. User settings only.
+* `kafka.ai.model`: model id for the provider (e.g. `claude-sonnet-5-5`, `gpt-5.5`, `gemini-flash-latest`, `llama3.2`); empty for the provider's recommended model.
+* `kafka.ai.baseUrl`: endpoint override (required for Azure OpenAI and custom servers). `https://`, or `http://` to localhost only. User settings only.
+* `kafka.ai.maxOutputTokens`: longest answer requested from API-key providers (default 2048).
+* `kafka.ai.includeMessagePayloads`: send message keys, headers and values, truncated (default off).
+* `kafka.ai.maskHosts`: replace broker and Schema Registry hostnames with placeholders (default off).
+* `kafka.ai.chatLocation`: where **Ask AI** opens: `panel` (default) or `chatView` (`@kafka`).
+* `kafka.ai.autoAnalyzeLagAlerts`: add a one-line AI cause to lag alert notifications (default off).
 
 ## Known Issues
 
@@ -103,6 +162,13 @@ When a connection fails, the error includes a hint about the likely cause. Commo
 ## Release Notes
 
 See [CHANGELOG.md](CHANGELOG.md) for the full history.
+
+### 0.4.0
+
+- **Kafka AI** with the provider you choose: Claude, GPT, Gemini, OpenRouter (browser sign-in), Mistral, Groq, DeepSeek, xAI, Azure OpenAI, Ollama, LM Studio, any OpenAI-compatible endpoint, or VS Code's models such as GitHub Copilot. Keys live in your OS keychain.
+- A **Kafka AI chat panel**, **`@kafka`** in the Chat view, and read-only **`#kafka_*` tools** the model uses to investigate by itself.
+- **Explain with AI** for connection failures, lag alerts (with rule-based trend analysis), topic and broker configs (with risky-setting checks), messages and decode errors; **Infer schema**; a dashboard **AI summary**.
+- Privacy by default: secrets are never sent, message contents only with opt-in, hostnames can be masked, nothing ever changes your cluster.
 
 ### 0.3.0
 

@@ -16,7 +16,10 @@ import {
   icons,
   scriptValue,
   sharedScript,
+  sparkleIcon,
 } from "./webview";
+import { isAiReady, onDidChangeAiAvailability } from "../ai/model";
+import { openAssistant } from "../ai/open";
 
 type WebviewInMessage =
   | { command: "refresh" }
@@ -25,7 +28,8 @@ type WebviewInMessage =
   | { command: "preview"; topic: string; spec: ResetSpec }
   | { command: "reset"; topic: string; spec: ResetSpec }
   | { command: "editOffset"; topic: string; partition: number }
-  | { command: "deleteGroup" };
+  | { command: "deleteGroup" }
+  | { command: "askAi" };
 
 /**
  * One webview panel per (cluster, group). Reused if already open instead of
@@ -61,6 +65,7 @@ export class GroupPanel {
 
     const instance = new GroupPanel(panel, manager, cluster, groupId, key);
     GroupPanel.panels.set(key, instance);
+    void instance.postAi();
   }
 
   private constructor(
@@ -91,6 +96,7 @@ export class GroupPanel {
           this.postConnection();
         },
       }),
+      onDidChangeAiAvailability(() => void this.postAi()),
     );
 
     this.postConnection();
@@ -127,7 +133,19 @@ export class GroupPanel {
       case "deleteGroup":
         await this.deleteGroup();
         break;
+      case "askAi":
+        openAssistant(this.manager, this.cluster.id, {
+          task: "lag",
+          prompt: "",
+          label: `Explain the lag of ${this.groupId}`,
+          target: { group: this.groupId },
+        });
+        break;
     }
+  }
+
+  private async postAi(): Promise<void> {
+    this.post({ command: "ai", available: await isAiReady() });
   }
 
   private postConnection(): void {
@@ -337,6 +355,7 @@ ${disconnectedBannerHtml()}
       </div>
       <div class="toolbar" data-needs-connection>
         <button class="secondary" id="refreshBtn">${icons.refresh}Refresh</button>
+        <button class="secondary" id="askAiBtn" hidden title="Explain this group's lag with AI">${sparkleIcon}Ask AI</button>
         <button class="secondary" id="watchBtn" title="Get a notification when this group's lag passes a threshold">Watch Lag…</button>
         <button id="resetOpenBtn" aria-expanded="false" aria-controls="resetPanel">Reset Offsets…</button>
         <button class="danger" id="deleteBtn">Delete Group</button>
@@ -541,6 +560,7 @@ ${disconnectedBannerScript}
     $('refreshBtn').addEventListener('click', () => vscode.postMessage({ command: 'refresh' }));
     $('deleteBtn').addEventListener('click', () => vscode.postMessage({ command: 'deleteGroup' }));
     $('watchBtn').addEventListener('click', () => vscode.postMessage({ command: 'watchLag' }));
+    $('askAiBtn').addEventListener('click', () => vscode.postMessage({ command: 'askAi' }));
     $('resetOpenBtn').addEventListener('click', () => openReset($('resetPanel').hidden));
     $('resetCloseBtn').addEventListener('click', () => openReset(false));
     $('resetCancelBtn').addEventListener('click', () => openReset(false));
@@ -581,6 +601,9 @@ ${disconnectedBannerScript}
         case 'resetDone':
           updateApply();
           if (message.ok) openReset(false);
+          break;
+        case 'ai':
+          $('askAiBtn').hidden = !message.available;
           break;
         case 'loading':
           $('progress').classList.toggle('active', message.value);

@@ -21,13 +21,22 @@ import { BrokerPanel } from "./panels/brokerPanel";
 import { AclPanel } from "./panels/aclPanel";
 import { parseBrokers, validateBrokers } from "./kafka/brokers";
 import { KafkaStatusBar } from "./statusBar";
+import { registerAiContext } from "./ai/settings";
+import { disposeAiOutputChannel } from "./ai/stream";
+import { registerKafkaChat } from "./ai/chat";
+import { initAiKeys } from "./ai/keys";
+import { isAiReady, registerAiAvailability } from "./ai/model";
+import { registerKafkaTools } from "./ai/lmTools";
+import { lagAiHooks, registerAiCommands } from "./ai/commands";
 
 const EDIT_SECURITY = "Edit Connection Security";
+const EXPLAIN_WITH_AI = "Explain with AI";
 
 export function activate(context: vscode.ExtensionContext): void {
   const manager = new ClusterManager(context.secrets);
   const treeProvider = new KafkaTreeProvider(manager);
   TopicPanel.setStorage(context.globalState);
+  DashboardPanel.setState(context.globalState);
 
   /** The error plus the likely cause/fix manager.connect() worked out, if any. */
   const failureText = (cluster: ClusterConfig, error: unknown): string => {
@@ -40,22 +49,33 @@ export function activate(context: vscode.ExtensionContext): void {
     error: unknown,
     prefix: string,
   ): Promise<void> => {
+    // Without a model (or with AI off) the buttons are exactly as before.
+    const ai = await isAiReady().catch(() => false);
     const choice = await vscode.window.showErrorMessage(
       `${prefix}: ${failureText(cluster, error)}`,
+      ...(ai ? [EXPLAIN_WITH_AI] : []),
       EDIT_SECURITY,
       "Show Output",
     );
-    if (choice === EDIT_SECURITY) {
+    if (choice === EXPLAIN_WITH_AI) {
+      vscode.commands.executeCommand("kafka-manager.explainErrorWithAi", { cluster });
+    } else if (choice === EDIT_SECURITY) {
       vscode.commands.executeCommand("kafka-manager.editClusterSecurity", { cluster });
     } else if (choice === "Show Output") {
       manager.showOutput();
     }
   };
 
+  const lagMonitor: LagMonitor = new LagMonitor(manager, lagAiHooks(context, manager, () => lagMonitor));
+
   context.subscriptions.push(
     manager,
+    initAiKeys(context.secrets),
+    registerAiContext(),
+    registerAiAvailability(),
+    { dispose: disposeAiOutputChannel },
     new KafkaStatusBar(manager),
-    new LagMonitor(manager),
+    lagMonitor,
     vscode.window.registerTreeDataProvider("kafkaExplorer", treeProvider),
 
     vscode.commands.registerCommand("kafka-manager.refresh", () =>
@@ -747,6 +767,10 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand("kafka-manager.showOutput", () =>
       manager.showOutput(),
     ),
+
+    registerAiCommands(context, manager, lagMonitor),
+    registerKafkaChat(context, manager),
+    registerKafkaTools(manager),
 
     vscode.commands.registerCommand(
       "kafka-manager.reconnectCluster",

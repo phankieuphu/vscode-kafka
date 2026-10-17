@@ -16,7 +16,11 @@ import {
   disconnectedBannerScript,
   watchCluster,
 } from "./clusterWatch";
-import { baseCss, contentSecurityPolicy, createNonce, escapeHtml, icons, scriptValue, sharedScript } from "./webview";
+import { baseCss, contentSecurityPolicy, createNonce, escapeHtml, icons, scriptValue, sharedScript, sparkleIcon } from "./webview";
+import { messageContext, messagesContext } from "../ai/context";
+import { isAiReady, onDidChangeAiAvailability } from "../ai/model";
+import { openAssistant } from "../ai/open";
+import { getAiSettings, updateAiSetting } from "../ai/settings";
 
 type Format = { key: MessageFormat; value: MessageFormat };
 
@@ -49,6 +53,9 @@ type WebviewInMessage =
   | { command: "listSubjects" }
   | { command: "saveTemplate"; template: ProduceTemplate }
   | { command: "deleteTemplate"; name: string }
+  | { command: "aiExplainMessage"; message: ConsumedMessage }
+  | { command: "aiInferSchema"; messages: ConsumedMessage[] }
+  | { command: "aiExplainConfig"; keysSeen?: boolean }
   | ProduceMessage;
 
 const TEMPLATE_KEY = "kafka-manager.templates";
@@ -130,13 +137,40 @@ export class TopicPanel {
           this.cluster = updated;
           this.postConnection();
         },
-      })
+      }),
+      onDidChangeAiAvailability(() => void this.postAi())
     );
+  }
+
+  private async postAi(): Promise<void> {
+    this.post({ command: "ai", available: await isAiReady() });
+  }
+
+  /**
+   * Message contents only go to a model with kafka.ai.includeMessagePayloads.
+   * Checked here, on the extension side, whatever the webview sends.
+   */
+  private async allowPayloads(): Promise<boolean> {
+    if (getAiSettings().includeMessagePayloads) {
+      return true;
+    }
+    const allow = "Allow Message Contents";
+    const choice = await vscode.window.showInformationMessage(
+      "Explaining messages sends their keys, headers and values (truncated, with credentials stripped) to the AI model. That is off by default.",
+      { modal: true, detail: "This turns on kafka.ai.includeMessagePayloads. Turn it off again in Kafka: AI Setup… or the settings." },
+      allow,
+    );
+    if (choice !== allow) {
+      return false;
+    }
+    await updateAiSetting("includeMessagePayloads", true);
+    return true;
   }
 
   private async handleMessage(message: WebviewInMessage): Promise<void> {
     switch (message.command) {
       case "ready":
+        void this.postAi();
         this.postConnection();
         this.postTemplates();
         await this.loadDetails();
@@ -194,6 +228,46 @@ export class TopicPanel {
         break;
       case "deleteTemplate":
         await this.deleteTemplate(message.name);
+        break;
+      case "aiExplainMessage": {
+        if (!(await this.allowPayloads())) {
+          break;
+        }
+        const m = message.message;
+        openAssistant(this.manager, this.cluster.id, {
+          task: m.decodeError ? "explain-decode-error" : "explain-message",
+          prompt: "",
+          label: `${m.decodeError ? "Why can't this message be decoded?" : "Explain this message"} (${this.topic}/${m.partition} @ ${m.offset})`,
+          target: { topic: this.topic },
+          extraSections: [messageContext(this.topic, m)],
+        });
+        break;
+      }
+      case "aiInferSchema": {
+        if (message.messages.length === 0) {
+          this.post({ command: "status", text: "Load some messages first, then infer their schema.", error: true });
+          break;
+        }
+        if (!(await this.allowPayloads())) {
+          break;
+        }
+        const section = messagesContext(this.topic, message.messages);
+        openAssistant(this.manager, this.cluster.id, {
+          task: "infer-schema",
+          prompt: "",
+          label: `Infer the schema of ${this.topic} from ${Math.min(20, message.messages.length)} message(s)`,
+          target: { topic: this.topic },
+          extraSections: [section],
+        });
+        break;
+      }
+      case "aiExplainConfig":
+        openAssistant(this.manager, this.cluster.id, {
+          task: "topic-config",
+          prompt: "",
+          label: `Explain the configuration of ${this.topic}`,
+          target: { topic: this.topic, keysSeen: message.keysSeen },
+        });
         break;
       case "produce":
         await this.produce(message);
@@ -660,6 +734,7 @@ ${disconnectedBannerCss}
           <select id="scanLimit" title="Messages to scan per partition"><option value="1000">scan 1k</option><option value="10000" selected>scan 10k</option><option value="100000">scan 100k</option></select>
         </span>
         <button class="secondary" id="cancelBtn" hidden>Cancel</button>
+        <button class="secondary" id="inferSchemaBtn" hidden title="Propose a JSON Schema, Avro schema and produce template from the loaded messages (AI)">${sparkleIcon}Infer schema</button>
         <button class="secondary" id="exportBtn" title="Save the messages shown as JSON or NDJSON">Export…</button>
         <button class="secondary" id="clearBtn">Clear</button>
       </div>
@@ -684,6 +759,7 @@ ${disconnectedBannerCss}
             <button class="icon" id="copyBtn" aria-label="Copy value" title="Copy value">${icons.copy}</button>
             <button class="icon" id="kcatBtn" aria-label="Copy as kcat command" title="Copy as kcat command">$</button>
             <button class="icon" id="resendBtn" aria-label="Load into produce form" title="Load into produce form">${icons.resend}</button>
+            <button class="icon" id="aiExplainBtn" hidden aria-label="Explain with AI" title="Explain this message with AI">${sparkleIcon}</button>
           </div>
         </div>
         <div id="detail" class="sub">Select a message to inspect its key, headers and value.</div>
@@ -733,6 +809,7 @@ ${disconnectedBannerCss}
       <div class="section-head">
         <h2>Configuration<span class="count" id="configCount"></span></h2>
         <div class="toolbar">
+          <button class="small secondary" id="explainConfigBtn" hidden title="Explain non-default and risky settings with AI">${sparkleIcon}Explain config</button>
           <label class="inline"><input type="checkbox" id="showDefaults" /> Show defaults</label>
           <label><span class="sr-only">Filter configuration</span><input type="search" id="configFilter" placeholder="Filter settings" /></label>
           <span class="toolbar" id="configActions" hidden data-needs-connection>
@@ -911,6 +988,11 @@ ${disconnectedBannerScript}
     function renderDetail() {
       const m = state.messages.find((x) => msgId(x) === state.selected);
       $('detailActions').hidden = !m;
+      if (m) {
+        const label = m.decodeError ? 'Explain the decode error with AI' : 'Explain this message with AI';
+        $('aiExplainBtn').title = label;
+        $('aiExplainBtn').setAttribute('aria-label', label);
+      }
       if (!m) {
         $('detailTitle').textContent = 'Message';
         $('detail').className = 'sub';
@@ -1212,6 +1294,16 @@ ${disconnectedBannerScript}
       const m = selectedMessage();
       if (m) vscode.postMessage({ command: 'copy', text: m.value ?? '' });
     });
+    $('aiExplainBtn').addEventListener('click', () => {
+      const m = selectedMessage();
+      if (m) vscode.postMessage({ command: 'aiExplainMessage', message: m });
+    });
+    $('inferSchemaBtn').addEventListener('click', () => vscode.postMessage({ command: 'aiInferSchema', messages: visibleMessages().slice(0, 200) }));
+    $('explainConfigBtn').addEventListener('click', () => {
+      // Whether loaded messages have keys matters for compacted topics; unknown when none are loaded.
+      const loaded = state.messages;
+      vscode.postMessage({ command: 'aiExplainConfig', keysSeen: loaded.length ? loaded.some((m) => m.key != null && m.key !== '') : undefined });
+    });
     $('kcatBtn').addEventListener('click', () => {
       const m = selectedMessage();
       if (m) vscode.postMessage({ command: 'copyKcat', message: m });
@@ -1318,6 +1410,11 @@ ${disconnectedBannerScript}
         case 'status':
           $('status').textContent = message.text;
           $('status').classList.toggle('error', !!message.error);
+          break;
+        case 'ai':
+          $('aiExplainBtn').hidden = !message.available;
+          $('inferSchemaBtn').hidden = !message.available;
+          $('explainConfigBtn').hidden = !message.available;
           break;
       }
     });

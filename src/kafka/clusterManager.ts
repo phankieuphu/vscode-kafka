@@ -27,7 +27,7 @@ import {
   connectionKey,
   needsPassword,
 } from "./connectionConfig";
-import { explainConnectionError } from "./connectionHints";
+import { ErrorLink, errorChain, explainConnectionError } from "./connectionHints";
 import { buildClusterOverview, RawGroup, RawWatermark } from "./dashboard";
 import { decodeField } from "./decode";
 import { partitionLag } from "./lag";
@@ -130,6 +130,7 @@ export class ClusterManager implements vscode.Disposable {
   private readonly admins = new Map<string, Admin>();
   private readonly lastErrors = new Map<string, string>();
   private readonly lastHints = new Map<string, string>();
+  private readonly lastChains = new Map<string, ErrorLink[]>();
   private readonly registries = new Map<string, { key: string; client: SchemaRegistryClient }>();
   /** Stop functions of the tails and browses running per cluster, so a disconnect can end them. */
   private readonly consumers = new Map<string, Set<() => Promise<void>>>();
@@ -198,6 +199,7 @@ export class ClusterManager implements vscode.Disposable {
     this.statuses.delete(id);
     this.lastErrors.delete(id);
     this.lastHints.delete(id);
+    this.lastChains.delete(id);
     this.registries.delete(id);
   }
 
@@ -402,6 +404,15 @@ export class ClusterManager implements vscode.Disposable {
     return password;
   }
 
+  /** Saved SASL and Schema Registry passwords, without prompting; for redaction. */
+  async getStoredSecrets(id: string): Promise<string[]> {
+    const values = await Promise.all([
+      this.secrets?.get(PASSWORD_SECRET_PREFIX + id),
+      this.secrets?.get(REGISTRY_SECRET_PREFIX + id),
+    ]);
+    return values.filter((v): v is string => !!v);
+  }
+
   async updateClusterName(
     id: string,
     name: string,
@@ -434,10 +445,16 @@ export class ClusterManager implements vscode.Disposable {
     return this.lastHints.get(id);
   }
 
+  /** The `cause` chain of the last connection failure, outermost first. */
+  getLastErrorChain(id: string): ErrorLink[] {
+    return this.lastChains.get(id) ?? [];
+  }
+
   private recordFailure(cluster: ClusterConfig, error: unknown, what: string): void {
     const hint = explainConnectionError(cluster, error);
     this.log(`${what} "${cluster.name}": ${describeError(error)}${hint ? `\n  Hint: ${hint}` : ""}`);
     this.lastErrors.set(cluster.id, describeError(error));
+    this.lastChains.set(cluster.id, errorChain(error));
     if (hint) {
       this.lastHints.set(cluster.id, hint);
     } else {
@@ -484,6 +501,7 @@ export class ClusterManager implements vscode.Disposable {
       this.admins.set(cluster.id, this.guardAdmin(cluster, admin));
       this.lastErrors.delete(cluster.id);
       this.lastHints.delete(cluster.id);
+      this.lastChains.delete(cluster.id);
       this.setStatus(cluster.id, "connected");
     } catch (error) {
       await admin?.disconnect().catch(() => undefined);

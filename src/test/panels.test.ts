@@ -3,6 +3,7 @@ import * as vm from 'vm';
 import { ClusterManager } from '../kafka/clusterManager';
 import { ClusterConfig } from '../kafka/types';
 import { AclPanel } from '../panels/aclPanel';
+import { AiChatPanel } from '../panels/aiChatPanel';
 import { BrokerPanel } from '../panels/brokerPanel';
 import { DashboardPanel } from '../panels/dashboardPanel';
 import { GroupPanel } from '../panels/groupPanel';
@@ -23,7 +24,7 @@ suite('Webview panels', () => {
 	});
 
 	teardown(() => {
-		for (const host of [TopicPanel, GroupPanel, DashboardPanel, BrokerPanel, AclPanel] as unknown as PanelHost[]) {
+		for (const host of [TopicPanel, GroupPanel, DashboardPanel, BrokerPanel, AclPanel, AiChatPanel] as unknown as PanelHost[]) {
 			for (const p of [...host.panels.values()]) {
 				p.panel.dispose();
 			}
@@ -49,4 +50,14 @@ suite('Webview panels', () => {
 			assert.ok(!html.includes('Panels <&>'), 'cluster name is escaped in the markup');
 		});
 	}
+
+	test('Kafka AI chat panel script compiles and keeps a strict CSP', () => {
+		AiChatPanel.show(manager, cluster.id);
+		const html = (AiChatPanel as unknown as PanelHost).panels.get(cluster.id)!.panel.webview.html;
+		const scripts = [...html.matchAll(/<script nonce="[^"]+">([\s\S]*?)<\/script>/g)].map((m) => m[1]);
+		assert.strictEqual(scripts.length, 1);
+		assert.doesNotThrow(() => new vm.Script(scripts[0]), 'AI chat panel script has a syntax error');
+		assert.match(html, /default-src 'none'; style-src 'unsafe-inline'; script-src 'nonce-/);
+		assert.doesNotMatch(html, /<script[^>]+src=/, 'no remote scripts');
+	});
 });
