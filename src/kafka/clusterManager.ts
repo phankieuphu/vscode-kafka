@@ -28,7 +28,7 @@ import {
   needsPassword,
 } from "./connectionConfig";
 import { ErrorLink, errorChain, explainConnectionError } from "./connectionHints";
-import { buildClusterOverview, RawGroup, RawWatermark } from "./dashboard";
+import { buildClusterOverview, RawClusterSnapshot, RawGroup, RawWatermark } from "./dashboard";
 import { decodeField } from "./decode";
 import { partitionLag } from "./lag";
 import { planReset } from "./offsets";
@@ -957,6 +957,11 @@ export class ClusterManager implements vscode.Disposable {
    * fetched once per topic and shared by every group's lag calculation.
    */
   async getClusterOverview(cluster: ClusterConfig): Promise<ClusterOverview> {
+    return buildClusterOverview(await this.getClusterSnapshot(cluster));
+  }
+
+  /** The raw admin responses behind the dashboard, also scanned by dev mode's issue detector. */
+  async getClusterSnapshot(cluster: ClusterConfig): Promise<RawClusterSnapshot> {
     const admin = this.ensureAdmin(cluster);
     const [description, topics, groupList] = await Promise.all([
       admin.describeCluster(),
@@ -1004,14 +1009,14 @@ export class ClusterManager implements vscode.Disposable {
       };
     });
 
-    return buildClusterOverview({
+    return {
       clusterId: description.clusterId,
       controllerId: description.controller,
       brokers: description.brokers,
       topics,
       watermarks,
       groups,
-    });
+    };
   }
 
   async resetGroupOffsetsTo(
