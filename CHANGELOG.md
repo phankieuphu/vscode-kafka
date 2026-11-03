@@ -6,6 +6,10 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 
 ## [Unreleased]
 
+### Added
+
+- **Dev mode** (`kafka.devMode.enabled`, **Kafka: Toggle Dev Mode**): connected clusters are scanned in the background for common issues — no controller, offline or under-replicated partitions, lag with no running consumers, offsets lost to retention or past the end of a recreated topic, offsets for deleted topics, stuck rebalances, steadily growing lag, dead-letter topic traffic and typo'd topic names. New issues are logged and notified, counted in the status bar, and listed by **Kafka: Show Detected Issues**. Settings `kafka.devMode.scanIntervalSeconds`, `kafka.devMode.notify` and `kafka.devMode.ignoredRules`
+
 ## [0.4.0] - 2026-10-15
 
 ### Added

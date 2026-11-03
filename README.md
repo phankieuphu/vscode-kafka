@@ -13,6 +13,7 @@ Manage Apache Kafka clusters directly from VS Code: connect to one or more clust
 - **Schema Registry decoding** — set a Schema Registry on a cluster (**Configure Schema Registry…**) and Avro, Protobuf and JSON Schema payloads in the Confluent wire format are decoded automatically, showing the schema id and subject. Key and value format pickers also offer String, JSON, Hex and Base64. Produce can encode a JSON value with a subject's latest schema.
 - **Produce** — send a message with an optional key, target partition and headers; JSON values are checked as you type (Ctrl/Cmd+Enter sends). Use `{{uuid}}`, `{{now}}`, `{{nowMs}}`, `{{random.int}}` and `{{seq}}` in the key, value and headers; send ×N with an optional delay for quick load tests; save the form as a **template** per topic. **From file…** sends every record of a JSON array or NDJSON file (exports can be replayed as-is) with a progress bar.
 - **Lag alerts** — **Watch Lag…** on a consumer group (or in its panel) sets a threshold. While the cluster is connected its lag is checked in the background (`kafka.lagAlertIntervalSeconds`); you get one notification when it crosses the threshold and a status bar warning until it recovers.
+- **Dev mode (auto-detect issues)** — run **Kafka: Toggle Dev Mode** (or set `kafka.devMode.enabled`) and every connected cluster is scanned in the background for common problems: no controller, offline or under-replicated partitions, consumer groups with lag but no running consumers, committed offsets already deleted by retention or past the end of a recreated topic, offsets left for deleted topics, rebalances that don't finish, lag that keeps growing, messages landing in dead-letter topics (`.dlq`, `-dlt`, `ordersDLT`…) and near-identical topic names that are usually typos. New issues are logged to the Kafka Manager output and notified; the status bar shows the count, and **Kafka: Show Detected Issues** lists them with what they usually mean — pick one to open its topic or group. No AI is involved; **Diagnose with AI** is offered when AI is set up.
 - **Brokers and ACLs** — the **Brokers** node lists each broker with its leader/replica counts; click one (or a broker row on the dashboard) for its settings and their source. **ACLs** shows a read-only list filterable by principal, resource and type.
 - **Consumer group panel** — state, members with their assigned partitions, and lag per partition (counting only retained messages when nothing is committed, and never negative). **Reset Offsets…** moves a topic to earliest, latest, a timestamp, or shifts by N, with a preview of partitions changed and messages skipped or replayed; it's blocked while the group has active members.
 - **Topic management** — create and delete topics from the tree's context menu.
@@ -151,6 +152,10 @@ When a connection fails, the error includes a hint about the likely cause. Commo
 * `kafka.ai.maskHosts`: replace broker and Schema Registry hostnames with placeholders (default off).
 * `kafka.ai.chatLocation`: where **Ask AI** opens: `panel` (default) or `chatView` (`@kafka`).
 * `kafka.ai.autoAnalyzeLagAlerts`: add a one-line AI cause to lag alert notifications (default off).
+* `kafka.devMode.enabled`: scan connected clusters for common issues in the background (default off).
+* `kafka.devMode.scanIntervalSeconds`: how often dev mode scans, in seconds (default 30, minimum 10).
+* `kafka.devMode.notify`: notify about new warning and critical issues (default on).
+* `kafka.devMode.ignoredRules`: dev mode checks to skip, e.g. `["similarTopicNames"]`.
 
 ## Known Issues
 

@@ -2,6 +2,7 @@ import * as vscode from "vscode";
 import { ClusterManager, describeError } from "./kafka/clusterManager";
 import { ClusterConfig, ClusterSource } from "./kafka/types";
 import { findLagAlert, LagMonitor, setLagAlert } from "./lagMonitor";
+import { DevModeMonitor, getDevModeSettings, setDevModeEnabled } from "./devMode";
 import { promptForSecurity } from "./securityPrompt";
 import {
   AclsTreeItem,
@@ -67,6 +68,7 @@ export function activate(context: vscode.ExtensionContext): void {
   };
 
   const lagMonitor: LagMonitor = new LagMonitor(manager, lagAiHooks(context, manager, () => lagMonitor));
+  const devMode = new DevModeMonitor(manager, () => isAiReady());
 
   context.subscriptions.push(
     manager,
@@ -76,10 +78,19 @@ export function activate(context: vscode.ExtensionContext): void {
     { dispose: disposeAiOutputChannel },
     new KafkaStatusBar(manager),
     lagMonitor,
+    devMode,
     vscode.window.registerTreeDataProvider("kafkaExplorer", treeProvider),
 
     vscode.commands.registerCommand("kafka-manager.refresh", () =>
       treeProvider.refresh(),
+    ),
+
+    vscode.commands.registerCommand("kafka-manager.toggleDevMode", () =>
+      setDevModeEnabled(!getDevModeSettings().enabled),
+    ),
+
+    vscode.commands.registerCommand("kafka-manager.showDetectedIssues", (item?: ClusterTreeItem) =>
+      devMode.showIssues(item?.cluster?.id),
     ),
 
     vscode.commands.registerCommand("kafka-manager.addCluster", async () => {

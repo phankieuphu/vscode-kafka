@@ -182,6 +182,57 @@
           "minimum": 10,
           "description": "How often watched consumer groups' lag is checked, in seconds."
         },
+        "kafka.devMode.enabled": {
+          "type": "boolean",
+          "default": false,
+          "markdownDescription": "**Dev mode**: automatically scan connected clusters for common Kafka issues (offline or under-replicated partitions, consumers stopped with lag, offsets lost to retention or past a recreated topic's end, stuck rebalances, growing lag, dead-letter traffic, typo'd topic names). New problems are logged to the Kafka Manager output, notified, and counted in the status bar. Toggle with **Kafka: Toggle Dev Mode**."
+        },
+        "kafka.devMode.scanIntervalSeconds": {
+          "type": "integer",
+          "default": 30,
+          "minimum": 10,
+          "description": "How often dev mode scans connected clusters, in seconds."
+        },
+        "kafka.devMode.notify": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show a notification when dev mode finds a new warning or critical issue. Issues are still logged and counted when off."
+        },
+        "kafka.devMode.ignoredRules": {
+          "type": "array",
+          "default": [],
+          "uniqueItems": true,
+          "description": "Dev mode checks to skip.",
+          "items": {
+            "type": "string",
+            "enum": [
+              "noController",
+              "offlinePartitions",
+              "underReplicated",
+              "offsetBehindRetention",
+              "offsetBeyondLogEnd",
+              "orphanedOffsets",
+              "lagWithoutMembers",
+              "stuckRebalance",
+              "growingLag",
+              "deadLetterTraffic",
+              "similarTopicNames"
+            ],
+            "enumDescriptions": [
+              "No active controller",
+              "Partitions without a leader",
+              "Under-replicated partitions",
+              "Committed offsets already deleted by retention",
+              "Committed offsets past the end of the log (topic recreated)",
+              "Offsets left for deleted topics",
+              "Lag on a group with no running consumers",
+              "Group stuck rebalancing across scans",
+              "Lag growing scan after scan while consumers run",
+              "Messages in dead-letter topics (.dlq, -dlt, DLT…)",
+              "Near-identical topic names (likely typos)"
+            ]
+          }
+        },
         "kafka.ai.enabled": {
           "type": "boolean",
           "default": true,
@@ -322,6 +373,16 @@
           "command": "kafka-manager.askAi",
           "when": "view == kafkaExplorer && kafka-manager.aiEnabled",
           "group": "navigation@3"
+        },
+        {
+          "command": "kafka-manager.toggleDevMode",
+          "when": "view == kafkaExplorer",
+          "group": "8_devMode@1"
+        },
+        {
+          "command": "kafka-manager.showDetectedIssues",
+          "when": "view == kafkaExplorer && kafka-manager.devMode",
+          "group": "8_devMode@2"
         },
         {
           "command": "kafka-manager.aiSetup",
@@ -469,6 +530,11 @@
           "command": "kafka-manager.askAi",
           "when": "view == kafkaExplorer && viewItem =~ /^kafkaCluster-/ && kafka-manager.aiEnabled",
           "group": "4_ai@0"
+        },
+        {
+          "command": "kafka-manager.showDetectedIssues",
+          "when": "view == kafkaExplorer && viewItem == kafkaCluster-connected && kafka-manager.devMode",
+          "group": "0_connection@1"
         },
         {
           "command": "kafka-manager.diagnoseWithAi",
@@ -805,6 +871,16 @@
         "command": "kafka-manager.askAi",
         "title": "Kafka: Ask AI…",
         "icon": "$(sparkle)"
+      },
+      {
+        "command": "kafka-manager.toggleDevMode",
+        "title": "Kafka: Toggle Dev Mode (Auto-Detect Issues)",
+        "icon": "$(bug)"
+      },
+      {
+        "command": "kafka-manager.showDetectedIssues",
+        "title": "Kafka: Show Detected Issues",
+        "icon": "$(bug)"
       },
       {
         "command": "kafka-manager.diagnoseWithAi",
